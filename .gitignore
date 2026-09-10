@@ -4,3 +4,7 @@ accounting/data/
 accounting/output/
 accounting/backups/
 accounting/logs/
+
+# Python
+__pycache__/
+*.pyc
