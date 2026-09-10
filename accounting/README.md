@@ -13,6 +13,9 @@ accounting/
 ├── config/
 │   ├── stores.yaml            店舗一覧・正式名称・データソースの場所
 │   └── accounts.yaml          経費科目の定義
+├── docs/
+│   ├── investigation-procedure.md   データソース調査手順(店舗・年月共通)
+│   └── accounting-spec.md           会計仕様書(税抜基準など正式ルールの詳細)
 ├── scripts/                   集計・検算ロジック(コードで固定)
 ├── data/                      日報から取得した生データのローカル控え(Git管理外)
 ├── output/
@@ -30,6 +33,8 @@ accounting/
 - **`README.md`**:このフォルダの構成説明です。
 - **`config/stores.yaml`**:対象6店舗(守山店・みよし店・日進赤池店・緑店・刈谷店・稲沢店)の正式名称、表記ゆれの許容リスト、日報の所在(Dropbox パス / Google スプレッドシートID等)を管理します。現時点では空テンプレートです。
 - **`config/accounts.yaml`**:家賃・人件費・広告費・仕入れ・その他経費など、経費科目の定義を管理します。現時点では空テンプレートです。
+- **`docs/investigation-procedure.md`**:Dropbox・Googleスプレッドシートの実データを調査するための、店舗・年月に依存しない汎用手順です。
+- **`docs/accounting-spec.md`**:会計仕様書。税抜基準など、金額の取り扱いに関する正式ルールの詳細を定義します。
 - **`scripts/`**:月次集計・検算・損益計算のロジックをコードとして置く場所です。計算はAIの都度判断ではなく、ここに置かれた固定ロジックで実行します。
 
 ### Git管理対象外(`.gitignore` で除外)
