@@ -1,0 +1,30 @@
+# 経費科目マスタ(空テンプレート)
+#
+# 店舗別損益・全社損益の計算に使う経費科目を定義します。
+# 会計AIは、ここに定義のない科目名を「未登録」として扱い、
+# 自動で近い科目に振り分けてはいけません(accounting/CLAUDE.md 参照)。
+#
+# 記入例(値は仮のものです。実際の科目構成に置き換えてください):
+#
+# categories:
+#   - id: rent
+#     name: "家賃"
+#     type: fixed          # fixed(固定費) または variable(変動費)
+#   - id: labor
+#     name: "人件費"
+#     type: fixed
+#   - id: advertising
+#     name: "広告費"
+#     type: variable
+#   - id: purchasing
+#     name: "仕入れ"
+#     type: variable
+#   - id: other
+#     name: "その他経費"
+#     type: variable
+
+categories: []
+
+# 店舗ごとに経費科目の対応が異なる場合(例:特定の店舗のみ発生する科目)は
+# ここに追記してください。現時点では未設定です。
+store_specific_categories: {}

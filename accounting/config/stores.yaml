@@ -1,0 +1,89 @@
+# 店舗マスタ(空テンプレート)
+#
+# 会計AIは、ここに登録された店舗名・別名以外の表記を「未登録」として扱い、
+# 自動で同一店舗と判断してはいけません(accounting/CLAUDE.md 参照)。
+#
+# 各店舗について、正式名称・別名(表記ゆれ)・日報の所在を設定してください。
+# source は日報が Google スプレッドシートの場合と Dropbox 上のファイルの場合の
+# どちらもあり得るため、該当する方を記入してください。
+#
+# 記入例(値は仮のものです。実際のIDやパスに置き換えてください):
+#
+# stores:
+#   - id: moriyama
+#     official_name: "守山店"
+#     aliases: ["守山", "Moriyama"]
+#     source:
+#       type: google_sheet   # google_sheet または dropbox
+#       spreadsheet_id: ""   # type が google_sheet の場合
+#       sheet_name: ""
+#       dropbox_path: ""     # type が dropbox の場合
+
+stores:
+  - id: moriyama
+    official_name: "守山店"
+    aliases: []
+    source:
+      type: ""
+      spreadsheet_id: ""
+      sheet_name: ""
+      dropbox_path: ""
+
+  - id: miyoshi
+    official_name: "みよし店"
+    aliases: []
+    source:
+      type: ""
+      spreadsheet_id: ""
+      sheet_name: ""
+      dropbox_path: ""
+
+  - id: nisshin_akaike
+    official_name: "日進赤池店"
+    aliases: []
+    source:
+      type: ""
+      spreadsheet_id: ""
+      sheet_name: ""
+      dropbox_path: ""
+
+  - id: midori
+    official_name: "緑店"
+    aliases: []
+    source:
+      type: ""
+      spreadsheet_id: ""
+      sheet_name: ""
+      dropbox_path: ""
+
+  - id: kariya
+    official_name: "刈谷店"
+    aliases: []
+    source:
+      type: ""
+      spreadsheet_id: ""
+      sheet_name: ""
+      dropbox_path: ""
+
+  - id: inazawa
+    official_name: "稲沢店"
+    aliases: []
+    source:
+      type: ""
+      spreadsheet_id: ""
+      sheet_name: ""
+      dropbox_path: ""
+
+# 転記先(正本)。実ファイルへの書き込みは必ず事前承認を得てから行うこと。
+targets:
+  sales_status_2026:
+    description: "2026 売上現状"
+    type: ""
+    spreadsheet_id: ""
+    sheet_name: ""
+
+  store_pl_2026:
+    description: "2026店舗収支"
+    type: ""
+    spreadsheet_id: ""
+    sheet_name: ""

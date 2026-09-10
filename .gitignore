@@ -1,0 +1,6 @@
+# accounting: ローカルの作業キャッシュ(実際の経営数値を含むため、Git管理対象外)
+# 正本は Google スプレッドシート・Dropbox 側のファイル。
+accounting/data/
+accounting/output/
+accounting/backups/
+accounting/logs/
