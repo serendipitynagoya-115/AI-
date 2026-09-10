@@ -35,6 +35,7 @@ accounting/
 - **`config/accounts.yaml`**:家賃・人件費・広告費・仕入れ・その他経費など、経費科目の定義を管理します。現時点では空テンプレートです。
 - **`docs/investigation-procedure.md`**:Dropbox・Googleスプレッドシートの実データを調査するための、店舗・年月に依存しない汎用手順です。
 - **`docs/accounting-spec.md`**:会計仕様書。税抜基準など、金額の取り扱いに関する正式ルールの詳細を定義します。
+- **`docs/data-access-architecture.md`**:Dropbox原本をセル単位で自動取得できるかの調査記録と、完全自動化に向けた選択肢の整理です。
 - **`scripts/`**:月次集計・検算・損益計算のロジックをコードとして置く場所です。計算はAIの都度判断ではなく、ここに置かれた固定ロジックで実行します。
 
 ### Git管理対象外(`.gitignore` で除外)
