@@ -89,14 +89,19 @@ def extract_retail_rows(ws, sheet: str):
             continue
         t = _num(ws[f"T{row}"].value) or 0.0
         w = _num(ws[f"W{row}"].value) or 0.0
-        af = _num(ws[f"AF{row}"].value) or 0.0
+        af_raw = ws[f"AF{row}"].value
+        # AF(税抜売上)自体が数式エラー(#N/A等)の場合、0円と断定せず「金額不明」として
+        # 分離する(売上を落とさない・0円で処理しないという最重要ルールに基づく)。
+        af_is_error = isinstance(af_raw, str) and af_raw.strip().startswith("#")
+        af = 0.0 if af_is_error else (_num(af_raw) or 0.0)
         b = ws[f"B{row}"].value
         c = ws[f"C{row}"].value
         d = ws[f"D{row}"].value
         rows.append({
             "row": row, "product": str(j).strip(), "quantity": k,
             "gross_incl_tax": p, "discount_incl_tax": t, "net_incl_tax": w,
-            "tax_excl_revenue": af, "customer_name": b, "staff_col": c, "category_label": d,
+            "tax_excl_revenue": af, "revenue_error": af_is_error,
+            "customer_name": b, "staff_col": c, "category_label": d,
         })
     return rows
 
@@ -149,7 +154,7 @@ def main():
                 gross_incl_tax=r["gross_incl_tax"], discount_incl_tax=r["discount_incl_tax"],
                 net_incl_tax=r["net_incl_tax"], tax_excl_revenue=r["tax_excl_revenue"],
                 price_history=price_history, staff_price_rules=staff_price_rules,
-                staff_names=staff_names,
+                staff_names=staff_names, revenue_error=r["revenue_error"],
             )
             day_txs.append(tx)
         all_transactions.extend(day_txs)
@@ -203,6 +208,11 @@ def main():
         classification_counts[tx.classification] = classification_counts.get(tx.classification, 0) + 1
     logger.info(f"判定件数: {classification_counts}")
 
+    severity_counts = {"正常": 0, "注意": 0, "要確認": 0, "重大エラー": 0}
+    for tx in all_transactions:
+        severity_counts[tx.severity] = severity_counts.get(tx.severity, 0) + 1
+    logger.info(f"重大度件数: {severity_counts}")
+
     def sum_attr(txs, attr):
         return round(sum(getattr(t, attr) or 0 for t in txs), 2)
 
@@ -227,11 +237,84 @@ def main():
     else:
         logger.info(f"5分類の合計は物販総売上と一致しました(差={bucket_check_diff})。")
 
+    # 調査3: 在庫帳(店舗スタッフによる手入力の日別販売数量・原価集計)と、監査エンジンが
+    # 日別シートの取引明細から積み上げた商品ごとの数量・原価を突き合わせる。
+    # 「数量と在庫減少の不整合」「販売数量×原価と販売原価の不整合」の検出に使う。
+    # 在庫帳のこれらの列は外部参照を経由しない(product-audit-spec.md §7参照)。
+    INVENTORY_QTY_TOLERANCE = 0.01
+    INVENTORY_COST_TOLERANCE_YEN = 1.0
+
+    engine_qty_by_product: dict[str, float] = {}
+    engine_cost_by_product: dict[str, float] = {}
+    for t in all_transactions:
+        if t.quantity:
+            engine_qty_by_product[t.product_name] = engine_qty_by_product.get(t.product_name, 0.0) + t.quantity
+        if t.cost_excl_tax_total is not None:
+            engine_cost_by_product[t.product_name] = engine_cost_by_product.get(t.product_name, 0.0) + t.cost_excl_tax_total
+
+    inventory_blocks = product_audit.parse_inventory_ledger(wb)
+    inventory_reconciliation_rows = []
+    for blk in inventory_blocks:
+        name = blk["product_name"]
+        if not name or name == "無":
+            continue
+        ledger_qty = blk["monthly_qty_sold"]
+        ledger_cost_value = blk["monthly_cost_value"]
+        engine_qty = engine_qty_by_product.get(name)
+        engine_cost = engine_cost_by_product.get(name)
+        if ledger_qty is None and engine_qty is None:
+            continue
+        qty_diff = (
+            round((engine_qty or 0.0) - (ledger_qty or 0.0), 2)
+            if not (ledger_qty is None and engine_qty is None) else None
+        )
+        cost_diff = (
+            round((engine_cost or 0.0) - (ledger_cost_value or 0.0), 2)
+            if not (ledger_cost_value is None and engine_cost is None) else None
+        )
+        qty_mismatch = qty_diff is not None and abs(qty_diff) > INVENTORY_QTY_TOLERANCE
+        cost_mismatch = cost_diff is not None and abs(cost_diff) > INVENTORY_COST_TOLERANCE_YEN
+        if not qty_mismatch and not cost_mismatch:
+            continue
+        severity = "要確認" if (qty_mismatch or cost_mismatch) else "正常"
+        reasons = []
+        if qty_mismatch:
+            reasons.append("数量と在庫減少の不整合")
+        if cost_mismatch:
+            reasons.append("販売数量×原価と販売原価の不整合")
+        inventory_reconciliation_rows.append({
+            "product_name": name,
+            "inventory_ledger_qty_sold": ledger_qty,
+            "engine_qty_sold": engine_qty,
+            "qty_diff": qty_diff,
+            "inventory_ledger_cost_value": ledger_cost_value,
+            "engine_cost_value": engine_cost,
+            "cost_diff": cost_diff,
+            "severity": severity,
+            "reason": "・".join(reasons),
+        })
+    inventory_recon_path = reconciliation_out_dir / f"{store_id}_inventory_reconciliation.csv"
+    io_utils.write_csv(
+        inventory_recon_path, inventory_reconciliation_rows,
+        fieldnames=["product_name", "inventory_ledger_qty_sold", "engine_qty_sold", "qty_diff",
+                    "inventory_ledger_cost_value", "engine_cost_value", "cost_diff", "severity", "reason"],
+    )
+    logger.info(
+        f"在庫帳との数量・原価突合を出力: {inventory_recon_path}"
+        f"(不整合{len(inventory_reconciliation_rows)}件/商品ブロック{len(inventory_blocks)}件中)"
+    )
+
     summary = {
         "store_id": store_id, "year_month": year_month,
         "source_file": str(source_path), "source_file_sha256": source_hash,
         "transaction_count": len(all_transactions),
         "classification_counts": classification_counts,
+        "severity_counts": severity_counts,
+        "inventory_reconciliation": {
+            "product_blocks_checked": len(inventory_blocks),
+            "mismatch_count": len(inventory_reconciliation_rows),
+            "output_csv": str(inventory_recon_path),
+        },
         "af54_reconciliation": {
             "sum_af54": round(total_af54, 2), "engine_total": round(total_engine, 2),
             "diff": total_diff, "matches": abs(total_diff) < 1.0,
@@ -281,6 +364,8 @@ def main():
             "classification": t.classification,
             "classification_detail": t.classification_detail,
             "profit_confirmed": t.profit_confirmed,
+            "severity": t.severity,
+            "flags": "・".join(t.flags) if t.flags else "",
         })
     detail_path = out_dir / f"{store_id}_product_audit_detail.csv"
     io_utils.write_csv(
@@ -289,14 +374,18 @@ def main():
                     "quantity", "regular_price_incl_tax_expected", "staff_price_incl_tax_expected",
                     "actual_price_incl_tax", "discount_incl_tax", "tax_excl_revenue",
                     "cost_excl_tax_total", "gross_profit", "gross_margin",
-                    "classification", "classification_detail", "profit_confirmed"],
+                    "classification", "classification_detail", "profit_confirmed",
+                    "severity", "flags"],
     )
     logger.info(f"取引明細を出力: {detail_path}")
 
-    error_rows = [r for r in detail_rows if r["classification"] != "A"]
+    # 要確認一覧(P項目): 重大度が「正常」以外(注意/要確認/重大エラー)の取引をすべて含める。
+    # 判定区分がA(正常)であっても、追加フラグ(異常値引き・社割価格流用の可能性等)により
+    # 重大度が引き上げられている取引を取りこぼさないため、classificationではなくseverityで判定する。
+    error_rows = [r for r in detail_rows if r["severity"] != "正常"]
     error_path = out_dir / f"{store_id}_product_audit_errors.csv"
     io_utils.write_csv(error_path, error_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
-    logger.info(f"要確認一覧(A以外)を出力: {error_path}({len(error_rows)}件)")
+    logger.info(f"要確認一覧(正常以外)を出力: {error_path}({len(error_rows)}件)")
 
     unconfirmed_rows = [r for r in detail_rows if not r["profit_confirmed"]]
     unconfirmed_path = out_dir / f"{store_id}_product_audit_profit_unconfirmed.csv"
@@ -311,7 +400,7 @@ def main():
         store_id=f"{store_id}_product_audit", year_month=year_month,
         source_file_sha256=source_hash, source_file_path=str(source_path),
         output_paths=[str(summary_path), str(detail_path), str(error_path), str(unconfirmed_path),
-                      str(day_reconciliation_path)],
+                      str(day_reconciliation_path), str(inventory_recon_path)],
     )
     if ledger_info["is_rerun_same_source"]:
         logger.info("同一ソースファイルでの再実行です。出力は上書きされ、二重計上は発生していません。")
