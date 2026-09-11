@@ -1,0 +1,259 @@
+#!/usr/bin/env python3
+"""物販取引の価格・原価監査スクリプト(読み取り専用)。
+
+やること:
+  1. Google Driveミラーとして取得済みのローカルExcel(日報)を読み取る(書き込みはしない)。
+  2. 日別シート(1〜31)から、物販(商品購入)取引をすべて抽出する。
+  3. accounting/config/product_price_history.yaml・staff_price_rules.yaml を使い、
+     「取引日時点で有効だった価格・原価」で監査する(現在価格での再計算はしない)。
+  4. 一般顧客／スタッフ／不明を判定し、それぞれの売上・原価・粗利益・粗利率を集計する。
+  5. 異常(価格不一致・原価未登録・価格履歴不足・商品不明・要現場確認等)を一覧化する。
+  6. 結果を accounting/output/ へ、ログを accounting/logs/ へ出力する。
+
+やらないこと:
+  - Googleスプレッドシートへの書き込み。
+  - Dropbox・Google Driveミラー・元Excelファイルの変更。
+  - 異常を「不正」「改ざん」と自動判定すること(あくまで不一致の抽出)。
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import warnings
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import openpyxl
+
+from lib import io_utils, product_audit, xlsx_report
+
+DATA_START_ROW = xlsx_report.DATA_START_ROW
+DATA_END_ROW = xlsx_report.DATA_END_ROW
+OVERFLOW_START_ROW = xlsx_report.OVERFLOW_START_ROW
+OVERFLOW_END_ROW = xlsx_report.OVERFLOW_END_ROW
+
+
+def parse_args():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--store-id", default="moriyama")
+    p.add_argument("--year-month", default="2026-08")
+    p.add_argument(
+        "--source-xlsx",
+        default=str(io_utils.DATA_DIR / "moriyama" / "2026-08" / "①8月.xlsx"),
+    )
+    p.add_argument(
+        "--price-history",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "product_price_history.yaml"),
+    )
+    p.add_argument(
+        "--staff-price-rules",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "staff_price_rules.yaml"),
+    )
+    return p.parse_args()
+
+
+def _num(v):
+    if v is None:
+        return 0.0
+    if isinstance(v, str):
+        return None if v.strip().startswith("#") else 0.0
+    return float(v)
+
+
+def get_staff_names(wb) -> list[str]:
+    ws = wb["基本情報"]
+    names = []
+    for row in range(4, 10):
+        v = ws.cell(row=row, column=5).value
+        if v and str(v).strip() not in ("その他",):
+            names.append(str(v).strip())
+    return names
+
+
+def extract_retail_rows(ws, sheet: str):
+    """物販(商品購入)取引の行を抽出する。書き込みは行わない。
+
+    商品名(J列)が空欄・「無」であっても、物販売上(P列)が計上されている行は
+    実在する取引として抽出する(商品名の有無を集計対象かどうかの条件にしない。
+    ルール1〜3・11と同じ考え方)。この場合、商品名は「無」のまま監査に回し、
+    価格履歴と突き合わせられないため H(商品不明)として検出させる。"""
+    rows = []
+    for row in list(range(DATA_START_ROW, DATA_END_ROW + 1)) + list(range(OVERFLOW_START_ROW, OVERFLOW_END_ROW + 1)):
+        j = ws[f"J{row}"].value
+        k = _num(ws[f"K{row}"].value)
+        p = _num(ws[f"P{row}"].value)
+        if j in (None, "") and not k and not p:
+            continue
+        if not k and not p:
+            continue
+        t = _num(ws[f"T{row}"].value) or 0.0
+        w = _num(ws[f"W{row}"].value) or 0.0
+        af = _num(ws[f"AF{row}"].value) or 0.0
+        b = ws[f"B{row}"].value
+        c = ws[f"C{row}"].value
+        d = ws[f"D{row}"].value
+        rows.append({
+            "row": row, "product": str(j).strip(), "quantity": k,
+            "gross_incl_tax": p, "discount_incl_tax": t, "net_incl_tax": w,
+            "tax_excl_revenue": af, "customer_name": b, "staff_col": c, "category_label": d,
+        })
+    return rows
+
+
+def main():
+    args = parse_args()
+    store_id, year_month = args.store_id, args.year_month
+    source_path = Path(args.source_xlsx)
+
+    logger, log_path = io_utils.setup_logger("product_audit", store_id, year_month)
+    logger.info("=== 物販監査スクリプト開始 ===")
+    logger.info(f"対象: store_id={store_id}, year_month={year_month}")
+    logger.info(f"入力ファイル(読み取り専用): {source_path}")
+
+    if not source_path.exists():
+        logger.error(f"入力ファイルが見つかりません: {source_path}")
+        sys.exit(1)
+
+    source_hash = xlsx_report.file_sha256(source_path)
+    logger.info(f"入力ファイルのSHA-256: {source_hash}")
+
+    price_history_path = Path(args.price_history)
+    staff_rules_path = Path(args.staff_price_rules)
+    price_history = product_audit.load_price_history(price_history_path)
+    staff_price_rules = product_audit.load_staff_price_rules(staff_rules_path)
+    logger.info(f"価格履歴マスター読み込み: {len(price_history)}商品 ({price_history_path})")
+    logger.info(f"スタッフ価格履歴マスター読み込み: {len(staff_price_rules)}商品 ({staff_rules_path})")
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        wb = openpyxl.load_workbook(source_path, data_only=True, read_only=False)
+
+    staff_names = get_staff_names(wb)
+    logger.info(f"担当スタッフ名一覧(購入者区分の判定に使用): {staff_names}")
+
+    all_transactions: list[product_audit.ProductTransaction] = []
+    for day in xlsx_report.DAY_SHEETS:
+        if day not in wb.sheetnames:
+            continue
+        ws = wb[day]
+        date_key = f"{year_month}-{int(day):02d}"
+        for r in extract_retail_rows(ws, day):
+            tx = product_audit.audit_transaction(
+                date=date_key, row=r["row"], customer_name=r["customer_name"],
+                staff_col=r["staff_col"], category_label=r["category_label"],
+                product_name=r["product"], quantity=r["quantity"],
+                gross_incl_tax=r["gross_incl_tax"], discount_incl_tax=r["discount_incl_tax"],
+                net_incl_tax=r["net_incl_tax"], tax_excl_revenue=r["tax_excl_revenue"],
+                price_history=price_history, staff_price_rules=staff_price_rules,
+                staff_names=staff_names,
+            )
+            all_transactions.append(tx)
+
+    logger.info(f"物販取引を{len(all_transactions)}件抽出しました。")
+
+    # --- 集計 ---
+    classification_counts = {}
+    for tx in all_transactions:
+        classification_counts[tx.classification] = classification_counts.get(tx.classification, 0) + 1
+    logger.info(f"判定件数: {classification_counts}")
+
+    def sum_attr(txs, attr):
+        return round(sum(getattr(t, attr) or 0 for t in txs), 2)
+
+    general_txs = [t for t in all_transactions if t.purchaser_type == "一般顧客"]
+    staff_txs = [t for t in all_transactions if t.purchaser_type == "スタッフ"]
+    unknown_txs = [t for t in all_transactions if t.purchaser_type == "不明"]
+
+    profit_confirmed_txs = [t for t in all_transactions if t.profit_confirmed]
+    profit_unconfirmed_txs = [t for t in all_transactions if not t.profit_confirmed]
+
+    summary = {
+        "store_id": store_id, "year_month": year_month,
+        "source_file": str(source_path), "source_file_sha256": source_hash,
+        "transaction_count": len(all_transactions),
+        "classification_counts": classification_counts,
+        "revenue_excl_tax": {
+            "total": sum_attr(all_transactions, "tax_excl_revenue"),
+            "general_customer": sum_attr(general_txs, "tax_excl_revenue"),
+            "staff": sum_attr(staff_txs, "tax_excl_revenue"),
+            "unknown": sum_attr(unknown_txs, "tax_excl_revenue"),
+        },
+        "cost_excl_tax": {
+            "total_confirmed": sum_attr(profit_confirmed_txs, "cost_excl_tax_total"),
+        },
+        "gross_profit": {
+            "total_confirmed": sum_attr(profit_confirmed_txs, "gross_profit"),
+        },
+        "gross_margin_confirmed": (
+            round(sum_attr(profit_confirmed_txs, "gross_profit") / sum_attr(profit_confirmed_txs, "tax_excl_revenue"), 4)
+            if sum_attr(profit_confirmed_txs, "tax_excl_revenue") else None
+        ),
+        "profit_confirmed_transaction_count": len(profit_confirmed_txs),
+        "profit_unconfirmed_transaction_count": len(profit_unconfirmed_txs),
+        "revenue_excl_tax_profit_unconfirmed": sum_attr(profit_unconfirmed_txs, "tax_excl_revenue"),
+    }
+
+    out_dir = io_utils.OUTPUT_DIR / "product_audit" / year_month
+    summary_path = out_dir / f"{store_id}_product_audit_summary.json"
+    io_utils.write_json(summary_path, summary)
+    logger.info(f"監査サマリを出力: {summary_path}")
+
+    detail_rows = []
+    for t in all_transactions:
+        detail_rows.append({
+            "date": t.date, "row": t.sheet_row,
+            "customer_name": t.customer_name or "(空欄)",
+            "purchaser_type": t.purchaser_type, "product_name": t.product_name,
+            "quantity": t.quantity,
+            "regular_price_incl_tax_expected": t.regular_price_incl_tax_expected,
+            "staff_price_incl_tax_expected": t.staff_price_incl_tax_expected,
+            "actual_price_incl_tax": t.actual_price_incl_tax,
+            "discount_incl_tax": t.discount_incl_tax,
+            "tax_excl_revenue": t.tax_excl_revenue,
+            "cost_excl_tax_total": t.cost_excl_tax_total,
+            "gross_profit": t.gross_profit,
+            "gross_margin": t.gross_margin,
+            "classification": t.classification,
+            "classification_detail": t.classification_detail,
+            "profit_confirmed": t.profit_confirmed,
+        })
+    detail_path = out_dir / f"{store_id}_product_audit_detail.csv"
+    io_utils.write_csv(
+        detail_path, detail_rows,
+        fieldnames=["date", "row", "customer_name", "purchaser_type", "product_name",
+                    "quantity", "regular_price_incl_tax_expected", "staff_price_incl_tax_expected",
+                    "actual_price_incl_tax", "discount_incl_tax", "tax_excl_revenue",
+                    "cost_excl_tax_total", "gross_profit", "gross_margin",
+                    "classification", "classification_detail", "profit_confirmed"],
+    )
+    logger.info(f"取引明細を出力: {detail_path}")
+
+    error_rows = [r for r in detail_rows if r["classification"] != "A"]
+    error_path = out_dir / f"{store_id}_product_audit_errors.csv"
+    io_utils.write_csv(error_path, error_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
+    logger.info(f"要確認一覧(A以外)を出力: {error_path}({len(error_rows)}件)")
+
+    unconfirmed_rows = [r for r in detail_rows if not r["profit_confirmed"]]
+    unconfirmed_path = out_dir / f"{store_id}_product_audit_profit_unconfirmed.csv"
+    io_utils.write_csv(unconfirmed_path, unconfirmed_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
+    logger.info(f"利益未確定取引一覧を出力: {unconfirmed_path}({len(unconfirmed_rows)}件)")
+
+    for cls in sorted(classification_counts):
+        if cls != "A":
+            logger.warning(f"判定{cls}: {classification_counts[cls]}件")
+
+    ledger_info = io_utils.update_ledger(
+        store_id=f"{store_id}_product_audit", year_month=year_month,
+        source_file_sha256=source_hash, source_file_path=str(source_path),
+        output_paths=[str(summary_path), str(detail_path), str(error_path), str(unconfirmed_path)],
+    )
+    if ledger_info["is_rerun_same_source"]:
+        logger.info("同一ソースファイルでの再実行です。出力は上書きされ、二重計上は発生していません。")
+
+    logger.info("=== 完了 ===")
+    logger.info(f"ログファイル: {log_path}")
+
+
+if __name__ == "__main__":
+    main()

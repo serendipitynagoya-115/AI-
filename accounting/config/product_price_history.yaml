@@ -1,0 +1,829 @@
+# 商品価格履歴マスター(price history)
+#
+# 目的: 物販監査は「取引日時点で有効だった価格・原価」を使う(accounting/CLAUDE.md、
+# accounting/docs/product-audit-spec.md 参照)。現在の商品マスター価格だけで過去取引を
+# 監査すると、価格改定前の正常な取引が誤ってエラー判定されることがあるため、
+# 商品ごとに「いつからいつまでこの価格だったか」を履歴として保持する。
+#
+# 各レコードのeffective_start_date〜effective_end_date(両端を含む)が、
+# 取引日を含む場合にそのレコードを採用する。該当するレコードが無い場合は
+# 「G. 価格履歴不足」として扱い、推測で埋めない。
+#
+# 現時点の全レコードは、守山店の日報「①8月.xlsx」基本情報シート(2026年8月分の
+# スナップショット)から取得した実際の値であり、2026年8月の期間についてのみ
+# 有効性を確認済み。8月より前・9月以降の期間は、別途確認できるまで
+# レコードを追加しないこと(存在しない期間は価格履歴不足として検出させる)。
+#
+# ドクターセレン(マグネシウム)については、2026-09-11にオーナーから正式に
+# 価格改定の情報(2026-09-01以降、通常価格+200円・仕入原価+100円)を受けている。
+# ただし絶対額(いくらになるか)はまだ確定していないため、9月分のレコードは
+# 追加していない。9月分のレコードが必要になった時点で、実際の新価格を
+# 確認してから追加すること(推測で埋めない)。
+
+products:
+- product_name: KALA
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 19440
+  regular_price_excl_tax: 18000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 8640
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ルイボスティーPONO
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 2376
+  regular_price_excl_tax: 2200
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 1650
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ドクターセレン（マグネシウム）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 3456
+  regular_price_excl_tax: 3200
+  staff_price_incl_tax: 2073
+  discount_rule: null
+  cost_price_excl_tax: 1080
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: 2026-08-31までの旧価格として確定(2026-09-11オーナー確認)。2026-09-01より通常販売価格+200円・仕入原価+100円に改定予定(絶対額は未確定のため本ファイルには記載しない。確定次第、新しいレコードを追加すること)。
+- product_name: リセットフローラ　プレミアム  90粒
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 19440
+  regular_price_excl_tax: 18000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 7560
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: MVM(マルチビタミンミネラル)
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 9120
+  regular_price_excl_tax: 8445
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4222.5
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ビタミンBバーナー
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 3942.0000000000005
+  regular_price_excl_tax: 3650
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 2190
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ドクターセレン（プロテイン）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 5940
+  regular_price_excl_tax: 5500
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 3950
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: アガベシロップ
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 1026
+  regular_price_excl_tax: 950
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 665
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: インカ
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 810
+  regular_price_excl_tax: 750
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 525
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: 有機ココアパウダー
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 820.8000000000001
+  regular_price_excl_tax: 760
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 532
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: 有機緑茶パウダー
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 540
+  regular_price_excl_tax: 500
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 350
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: 有機ほうじ茶パウダー
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 540
+  regular_price_excl_tax: 500
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 350
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: スローグリーンコーヒー
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 3800
+  regular_price_excl_tax: 3519
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 2111.4
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: FEEL NATURAL＋（WPI）プレーン
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 5979.96
+  regular_price_excl_tax: 5537
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4042
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: MAKE BALANCE シェイカー（300ml）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 750.2
+  regular_price_excl_tax: 682
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 546
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: アップルビネガー
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 972.0000000000001
+  regular_price_excl_tax: 900
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 675
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: フレックスシードオイル
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 2484
+  regular_price_excl_tax: 2300
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 1725
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: 枕
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 18422.800000000003
+  regular_price_excl_tax: 16748
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 6600
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ボタニカルエイド
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 3300.0000000000005
+  regular_price_excl_tax: 3000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 3000
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ヨックション
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 2970.0000000000005
+  regular_price_excl_tax: 2700
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 1512
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: MG 　RECOVERY　EｎＣｏ　3ｋｇ
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 3960.0000000000005
+  regular_price_excl_tax: 3600
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 2160
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: テラミークリーム
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ハイソックスS
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ハイソックスM
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ハイソックスL
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ハイソックスLL
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ハイソックス3L
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: TAIKANソックス（S）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: TAIKANソックス（M）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: TAIKANソックス（L）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: TAIKANソックス（LL）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 12100.000000000002
+  regular_price_excl_tax: 11000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4290
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: エナジック・アンクルソックス
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 13750.000000000002
+  regular_price_excl_tax: 12500
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4875
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: 骨盤ベルトS・M
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 17600
+  regular_price_excl_tax: 16000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 6240
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: 骨盤ベルトL・LL
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 17600
+  regular_price_excl_tax: 16000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 6240
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: 骨盤ベルト3L
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 17600
+  regular_price_excl_tax: 16000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 6240
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: エレクトガードル七分丈S
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 30800.000000000004
+  regular_price_excl_tax: 28000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 10920
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: エレクトガードル七分丈L
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 30800.000000000004
+  regular_price_excl_tax: 28000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 10920
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: エレクトガードル十分丈L
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 30800.000000000004
+  regular_price_excl_tax: 28000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 10920
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: レディースガードル七分丈LL
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 30800.000000000004
+  regular_price_excl_tax: 28000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 10920
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: レディースボクサーパンツ四分丈S
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 27500.000000000004
+  regular_price_excl_tax: 25000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 9750
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ホルミーブラトップS
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 38500
+  regular_price_excl_tax: 35000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 13650
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ホルミーブラトップM
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 38500
+  regular_price_excl_tax: 35000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 13650
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ホルミーブラトップL
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 38500
+  regular_price_excl_tax: 35000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 13650
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ドレナージュタイツM
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 13200.000000000002
+  regular_price_excl_tax: 12000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4680
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ドレナージュタイツL
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 13200.000000000002
+  regular_price_excl_tax: 12000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4680
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ホルミーレディースボクサーパンツL
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 27500.000000000004
+  regular_price_excl_tax: 25000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 9750
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: アームガードルM（レース無し）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 13200.000000000002
+  regular_price_excl_tax: 12000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4680
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: アームガードルL（レース無し）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 13200.000000000002
+  regular_price_excl_tax: 12000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4680
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: セルゼロクリーム
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 9350
+  regular_price_excl_tax: 8500
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 8500
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: CO²　ブーティスト　１５０ｇ
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 7150.000000000001
+  regular_price_excl_tax: 6500
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 6500
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: セルゼロクリーム（フェイシャル用）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 5500
+  regular_price_excl_tax: 5000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 5000
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: リンパ用OIL（消耗品）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 0
+  regular_price_excl_tax: 0
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 1772
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: セット料金（標準税率）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 0
+  regular_price_excl_tax: 0
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 0
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: セット料金（軽減税率）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 0
+  regular_price_excl_tax: 0
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 0
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: その他店販（標準税率）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 0
+  regular_price_excl_tax: 0
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 0
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: その他店販（軽減税率）
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 0
+  regular_price_excl_tax: 0
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 0
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: グローパック
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 19800
+  regular_price_excl_tax: 18000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 9000
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: プレップミスト
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 6930.000000000001
+  regular_price_excl_tax: 6300
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 3150
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ルフェルクリーム
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 13200.000000000002
+  regular_price_excl_tax: 12000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 6000
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: エンビ―セラム
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 11000
+  regular_price_excl_tax: 10000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 5000
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: クレンジングジェル
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 5500
+  regular_price_excl_tax: 5000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 2500
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: フェイシャルフォアミングウォッシュ
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 5280
+  regular_price_excl_tax: 4800
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 2400
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: ファーストステップローション
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 8030.000000000001
+  regular_price_excl_tax: 7300
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 3650
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: コントアBクリーム
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 8800
+  regular_price_excl_tax: 8000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 4000
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: プロテクトUVジェル
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 4400
+  regular_price_excl_tax: 4000
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 2000
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: 'プロテクトUVベースクリーム
+
+    （ピンクベージュ）'
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 5280
+  regular_price_excl_tax: 4800
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 2400
+  tax_category: 標準税率
+  tax_rate: 1.1
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''
+- product_name: リポソームビタミンＣ
+  effective_start_date: '2026-08-01'
+  effective_end_date: '2026-08-31'
+  regular_price_incl_tax: 3996.0000000000005
+  regular_price_excl_tax: 3700
+  staff_price_incl_tax: null
+  discount_rule: null
+  cost_price_excl_tax: 1980
+  tax_category: 軽減税率
+  tax_rate: 1.08
+  source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
+  notes: ''

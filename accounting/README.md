@@ -11,11 +11,14 @@ accounting/
 ├── CLAUDE.md                  会計AIの役割・最重要ルール
 ├── README.md                  このファイル
 ├── config/
-│   ├── stores.yaml            店舗一覧・正式名称・データソースの場所
-│   └── accounts.yaml          経費科目の定義
+│   ├── stores.yaml                 店舗一覧・正式名称・データソースの場所
+│   ├── accounts.yaml               経費科目の定義
+│   ├── product_price_history.yaml  商品価格・原価の履歴マスター(価格改定対応)
+│   └── staff_price_rules.yaml      スタッフ価格(社割)の履歴マスター
 ├── docs/
 │   ├── investigation-procedure.md   データソース調査手順(店舗・年月共通)
-│   └── accounting-spec.md           会計仕様書(税抜基準など正式ルールの詳細)
+│   ├── accounting-spec.md           会計仕様書(税抜基準など正式ルールの詳細)
+│   └── product-audit-spec.md        物販監査仕様書(価格履歴ベースの監査ルール)
 ├── scripts/                   集計・検算ロジック(コードで固定)
 ├── data/                      日報から取得した生データのローカル控え(Git管理外)
 ├── output/
@@ -37,6 +40,8 @@ accounting/
 - **`docs/accounting-spec.md`**:会計仕様書。税抜基準など、金額の取り扱いに関する正式ルールの詳細を定義します。
 - **`docs/data-access-architecture.md`**:Dropbox原本をセル単位で自動取得できるかの調査記録と、完全自動化に向けた選択肢の整理です。
 - **`docs/write-design.md`**:Googleスプレッドシートへの書き込み機能の設計書(設計のみ・未実装)。承認フロー・バックアップ・書き込み後検算・復元の設計を含みます。
+- **`docs/product-audit-spec.md`**:物販監査仕様書。価格改定をまたいでも正しく監査するための、価格履歴マスターの設計と異常判定(A〜I)・利益計算ルールを定義します。
+- **`config/product_price_history.yaml` / `config/staff_price_rules.yaml`**:商品の通常価格・原価・スタッフ価格を、期間付きの履歴として管理するマスターデータ。
 - **`scripts/`**:月次集計・検算・損益計算のロジックをコードとして置く場所です。計算はAIの都度判断ではなく、ここに置かれた固定ロジックで実行します。
 
 ### Git管理対象外(`.gitignore` で除外)
