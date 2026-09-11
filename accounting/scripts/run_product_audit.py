@@ -133,12 +133,15 @@ def main():
     logger.info(f"担当スタッフ名一覧(購入者区分の判定に使用): {staff_names}")
 
     all_transactions: list[product_audit.ProductTransaction] = []
+    day_reconciliation_rows = []
     for day in xlsx_report.DAY_SHEETS:
         if day not in wb.sheetnames:
             continue
         ws = wb[day]
         date_key = f"{year_month}-{int(day):02d}"
-        for r in extract_retail_rows(ws, day):
+        day_retail_rows = extract_retail_rows(ws, day)
+        day_txs = []
+        for r in day_retail_rows:
             tx = product_audit.audit_transaction(
                 date=date_key, row=r["row"], customer_name=r["customer_name"],
                 staff_col=r["staff_col"], category_label=r["category_label"],
@@ -148,9 +151,51 @@ def main():
                 price_history=price_history, staff_price_rules=staff_price_rules,
                 staff_names=staff_names,
             )
-            all_transactions.append(tx)
+            day_txs.append(tx)
+        all_transactions.extend(day_txs)
+
+        # 調査1: 日別シートAF54(物販税別合計)と、監査エンジンがその日に認識した
+        # 物販税抜売上の合計を突き合わせる。1円以上ずれた場合は行番号まで特定する。
+        af54_raw = ws["AF54"].value
+        af54 = None if (isinstance(af54_raw, str) and af54_raw.startswith("#")) else (af54_raw or 0)
+        engine_sum = round(sum(t.tax_excl_revenue for t in day_txs), 2)
+        diff = None if af54 is None else round(engine_sum - af54, 2)
+        day_reconciliation_rows.append({
+            "day": day, "af54_report": af54, "engine_sum": engine_sum,
+            "diff": diff, "transaction_count": len(day_txs),
+        })
+        if diff is not None and abs(diff) >= 1.0:
+            logger.error(
+                f"[{day}日] 物販売上の不一致を検出: AF54={af54} / 監査エンジン={engine_sum} (差={diff})"
+            )
+            for r in day_retail_rows:
+                logger.error(
+                    f"  行{r['row']}: 商品={r['product']!r} 顧客={r['customer_name']!r} "
+                    f"AF(税抜)={r['tax_excl_revenue']} P(税込)={r['gross_incl_tax']}"
+                )
 
     logger.info(f"物販取引を{len(all_transactions)}件抽出しました。")
+
+    reconciliation_out_dir = io_utils.OUTPUT_DIR / "product_audit" / year_month
+    day_reconciliation_path = reconciliation_out_dir / f"{store_id}_af54_vs_engine.csv"
+    io_utils.write_csv(
+        day_reconciliation_path, day_reconciliation_rows,
+        fieldnames=["day", "af54_report", "engine_sum", "diff", "transaction_count"],
+    )
+    logger.info(f"日別AF54突合結果を出力: {day_reconciliation_path}")
+
+    total_af54 = sum(r["af54_report"] or 0 for r in day_reconciliation_rows if r["af54_report"] is not None)
+    total_engine = sum(r["engine_sum"] for r in day_reconciliation_rows)
+    total_diff = round(total_engine - total_af54, 2)
+    if abs(total_diff) >= 1.0:
+        logger.error(
+            f"月合計で不一致: SUM(AF54)={total_af54} / 監査エンジン合計={total_engine} (差={total_diff})。"
+            "この監査は完成扱いにできません。"
+        )
+    else:
+        logger.info(
+            f"月合計はSUM(AF54)={total_af54}と監査エンジン合計={total_engine}で一致しました(差={total_diff})。"
+        )
 
     # --- 集計 ---
     classification_counts = {}
@@ -161,23 +206,40 @@ def main():
     def sum_attr(txs, attr):
         return round(sum(getattr(t, attr) or 0 for t in txs), 2)
 
-    general_txs = [t for t in all_transactions if t.purchaser_type == "一般顧客"]
-    staff_txs = [t for t in all_transactions if t.purchaser_type == "スタッフ"]
-    unknown_txs = [t for t in all_transactions if t.purchaser_type == "不明"]
-
     profit_confirmed_txs = [t for t in all_transactions if t.profit_confirmed]
     profit_unconfirmed_txs = [t for t in all_transactions if not t.profit_confirmed]
+
+    # 調査2: 全取引を「一般顧客/スタッフ/購入者区分不明/商品不明/その他」の5分類に
+    # 排他的に振り分け、5分類の合計売上が物販総売上と一致することを検証する。
+    buckets = ["一般顧客", "スタッフ", "購入者区分不明", "商品不明", "その他"]
+    bucket_revenue = {
+        b: sum_attr([t for t in all_transactions if t.primary_bucket == b], "tax_excl_revenue")
+        for b in buckets
+    }
+    total_revenue = sum_attr(all_transactions, "tax_excl_revenue")
+    bucket_sum = round(sum(bucket_revenue.values()), 2)
+    bucket_check_diff = round(bucket_sum - total_revenue, 2)
+    if abs(bucket_check_diff) >= 1.0:
+        logger.error(
+            f"5分類の合計({bucket_sum})が物販総売上({total_revenue})と一致しません(差={bucket_check_diff})。"
+            "この監査は完成扱いにできません。"
+        )
+    else:
+        logger.info(f"5分類の合計は物販総売上と一致しました(差={bucket_check_diff})。")
 
     summary = {
         "store_id": store_id, "year_month": year_month,
         "source_file": str(source_path), "source_file_sha256": source_hash,
         "transaction_count": len(all_transactions),
         "classification_counts": classification_counts,
+        "af54_reconciliation": {
+            "sum_af54": round(total_af54, 2), "engine_total": round(total_engine, 2),
+            "diff": total_diff, "matches": abs(total_diff) < 1.0,
+        },
         "revenue_excl_tax": {
-            "total": sum_attr(all_transactions, "tax_excl_revenue"),
-            "general_customer": sum_attr(general_txs, "tax_excl_revenue"),
-            "staff": sum_attr(staff_txs, "tax_excl_revenue"),
-            "unknown": sum_attr(unknown_txs, "tax_excl_revenue"),
+            "total": total_revenue,
+            **{f"bucket_{b}": v for b, v in bucket_revenue.items()},
+            "bucket_sum_check_diff": bucket_check_diff,
         },
         "cost_excl_tax": {
             "total_confirmed": sum_attr(profit_confirmed_txs, "cost_excl_tax_total"),
@@ -191,6 +253,7 @@ def main():
         ),
         "profit_confirmed_transaction_count": len(profit_confirmed_txs),
         "profit_unconfirmed_transaction_count": len(profit_unconfirmed_txs),
+        "revenue_excl_tax_profit_confirmed": sum_attr(profit_confirmed_txs, "tax_excl_revenue"),
         "revenue_excl_tax_profit_unconfirmed": sum_attr(profit_unconfirmed_txs, "tax_excl_revenue"),
     }
 
@@ -204,7 +267,8 @@ def main():
         detail_rows.append({
             "date": t.date, "row": t.sheet_row,
             "customer_name": t.customer_name or "(空欄)",
-            "purchaser_type": t.purchaser_type, "product_name": t.product_name,
+            "purchaser_type": t.purchaser_type, "primary_bucket": t.primary_bucket,
+            "product_name": t.product_name,
             "quantity": t.quantity,
             "regular_price_incl_tax_expected": t.regular_price_incl_tax_expected,
             "staff_price_incl_tax_expected": t.staff_price_incl_tax_expected,
@@ -221,7 +285,7 @@ def main():
     detail_path = out_dir / f"{store_id}_product_audit_detail.csv"
     io_utils.write_csv(
         detail_path, detail_rows,
-        fieldnames=["date", "row", "customer_name", "purchaser_type", "product_name",
+        fieldnames=["date", "row", "customer_name", "purchaser_type", "primary_bucket", "product_name",
                     "quantity", "regular_price_incl_tax_expected", "staff_price_incl_tax_expected",
                     "actual_price_incl_tax", "discount_incl_tax", "tax_excl_revenue",
                     "cost_excl_tax_total", "gross_profit", "gross_margin",
@@ -246,7 +310,8 @@ def main():
     ledger_info = io_utils.update_ledger(
         store_id=f"{store_id}_product_audit", year_month=year_month,
         source_file_sha256=source_hash, source_file_path=str(source_path),
-        output_paths=[str(summary_path), str(detail_path), str(error_path), str(unconfirmed_path)],
+        output_paths=[str(summary_path), str(detail_path), str(error_path), str(unconfirmed_path),
+                      str(day_reconciliation_path)],
     )
     if ledger_info["is_rerun_same_source"]:
         logger.info("同一ソースファイルでの再実行です。出力は上書きされ、二重計上は発生していません。")

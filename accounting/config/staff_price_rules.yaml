@@ -19,9 +19,14 @@
 #
 # 該当するレコードが無い商品・期間は「G. 価格履歴不足」として扱い、推測で埋めない。
 #
-# 2026-09-11時点で確定しているのは、ドクターセレン(マグネシウム)の2026年8月分のみ。
-# 他の商品(Grant商品・化粧品カテゴリ等、割合ベースの社割があるとされるもの)は、
-# 対象商品リスト・割引率・端数処理ルールのいずれも未確認のため、レコードを追加していない。
+# 監査時の比較対象について: 日報の物販行には、値引(T列)が別途記録されていることがある。
+# スタッフ購入では「通常価格で一旦入力し、値引欄に社割差額を記録する」運用になっている
+# ケースが実データで複数確認できたため、監査では「値引後の実売価格(=物販税込−値引額)」を
+# 社割価格と比較する。値引前の金額と比較すると、値引運用を反映した正常な取引まで
+# 「価格履歴不足」や不一致として誤検出する(2026-09-11に判明・修正済み)。
+#
+# 2026-09-11: オーナーより「社割価格表(26.5)〜.pdf」の内容を正式に受領し、
+# 以下19商品について絶対額(税込)を確定値として登録した。
 
 staff_price_rules:
   - product_name: "ドクターセレン（マグネシウム）"
@@ -31,11 +36,206 @@ staff_price_rules:
     explicit_staff_price_incl_tax: 2073
     discount_percent: null
     rounding_rule: null
-    source: "2026-09-11 オーナー確認(チャットでの正式連絡)"
+    source: "2026-09-11 オーナー確認(チャットでの正式連絡)、社割価格表(26.5)〜.pdf"
     notes: "2026-09-01以降は新価格に伴い社割価格も変更される見込みだが、絶対額は未確認のためレコード未追加。"
 
-# 割合ベースの社割(例: Grant商品・化粧品「40%OFF」)を追加する場合のレコード例(現時点ではダミー。
-# 実データが確認できるまで有効なレコードとしては登録しない):
+  - product_name: "KALA"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 11664
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "ルイボスティーPONO"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 1901
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "リセットフローラ　プレミアム  90粒"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 11664
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "MVM(マルチビタミンミネラル)"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 5472
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "ビタミンBバーナー"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 2365
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "リポソームビタミンＣ"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 2397
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "FEEL NATURAL＋（WPI）プレーン"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 4784
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "ドクターセレン（プロテイン）"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 4320
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "スローグリーンコーヒー"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 2280
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "アガベシロップ"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 821
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "インカ"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 648
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "有機ココアパウダー"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 657
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "有機緑茶パウダー"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 432
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "有機ほうじ茶パウダー"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 432
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "MAKE BALANCE シェイカー（300ml）"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 600
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "枕"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 7260
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "ヨックション"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 1782
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "MG 　RECOVERY　EｎＣｏ　3ｋｇ"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 2376
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+  - product_name: "テラミークリーム"
+    effective_start_date: "2026-08-01"
+    effective_end_date: "2026-08-31"
+    rule_type: "explicit_staff_price_incl_tax"
+    explicit_staff_price_incl_tax: 7260
+    discount_percent: null
+    rounding_rule: null
+    source: "社割価格表(26.5)〜.pdf"
+    notes: ""
+
+# 割合ベースの社割(Grant商品・化粧品「40%OFF」)について:
+# 対象となる具体的な商品名の一覧が確認できていないため、レコードは追加していない。
+# 2026-09-11の守山8月再監査で、コントアBクリーム(化粧品と思われる)のスタッフ購入1件が
+# 「値引後価格 = 通常価格 × 60%(40%OFF)」に一致することを検知したが、これが正式な
+# 40%OFFルールの対象商品であるか、上記の社割価格表とは別枠の運用であるかは未確認のため、
+# 推測でレコード化していない(価格履歴不足のまま)。対象商品リスト・端数処理ルールが
+# 確認でき次第、以下の形式でレコードを追加する。
 #
 # - product_name: "<商品名>"
 #   effective_start_date: "<開始日>"
