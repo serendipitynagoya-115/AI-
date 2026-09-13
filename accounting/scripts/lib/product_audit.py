@@ -127,17 +127,26 @@ def _find_effective_record(records: list[dict], date_key: str) -> dict | None:
 def classify_purchaser(customer_name: str | None, staff_names: list[str], aliases: dict | None = None) -> str:
     """来店者区分(一般顧客/スタッフ/不明)を判定する。
 
-    - 顧客名が空欄の場合は「不明」とする。
+    区分は「スタッフ」「社内購入」「一般顧客」「購入者不明」の4種類(2026-09-13確定)。
+    - 顧客名が空欄の場合は「購入者不明」とする。
     - 顧客名がスタッフ名簿(基本情報シート)の前方一致に該当する場合は「スタッフ」とする
-      (フリガナが氏名の直後に続く表記のため前方一致で判定)。
-    - 顧客名が別名(alias)マスターに一致する場合も「スタッフ」(社内購入含む)とする
-      (表記ゆれ・オーナーの通称等を吸収するため。2026-09-13確定)。
+      (フリガナが氏名の直後に続く表記のため前方一致で判定)。別名(alias)経由で
+      解決した正式氏名がスタッフ名簿に該当する場合も「スタッフ」とする
+      (表記ゆれ吸収のため。例:こたぎりけいこ→小田切敬子)。
+    - 顧客名が別名(alias)マスターに一致するが、解決した正式氏名がスタッフ名簿には
+      無い場合は「社内購入」とする(例:オーナー→辻正裕)。
+    - いずれにも該当しない場合は「一般顧客」とする。
     """
     norm = _normalize_name(customer_name)
     if not norm:
-        return "不明"
+        return "購入者不明"
     if aliases and norm in aliases:
-        return "スタッフ"
+        formal_norm = _normalize_name(aliases[norm]["formal_name"])
+        for staff in staff_names:
+            staff_norm = _normalize_name(staff)
+            if staff_norm and formal_norm.startswith(staff_norm):
+                return "スタッフ"
+        return "社内購入"
     for staff in staff_names:
         staff_norm = _normalize_name(staff)
         if staff_norm and norm.startswith(staff_norm):
@@ -156,25 +165,19 @@ def resolve_purchaser_alias(customer_name: str | None, aliases: dict | None) -> 
 UNKNOWN_PRODUCT_LABELS = (None, "", "無")
 
 
-def determine_primary_bucket(purchaser_type: str, product_known: bool) -> str:
-    """全取引を排他的に分類する集計バケット。
+def determine_product_status(product_known: bool) -> str:
+    """商品特定状態(商品特定済み/商品不明)。購入者区分とは独立した別軸(2026-09-14確定)。
 
-    2026-09-11の調査で判明した通り、「購入者区分」と「商品が価格履歴にあるか」は
-    別々の軸であり、両方を無条件に足し合わせると同じ取引が二重に数えられたり
-    (または漏れたり)する。監査サマリでは必ずこの5分類のいずれか1つにだけ
-    振り分け、5分類の合計が物販総売上(AF列合計)と一致するようにする。
-    商品不明を購入者区分より優先する(商品が特定できない取引は、まず商品不明として
-    扱い、一般顧客/スタッフ内訳には二重計上しない)。
+    2026-09-11の調査時点では「購入者区分」と「商品が価格履歴にあるか」を1つの
+    排他的な集計バケット(primary_bucket)にまとめていたが、これだと商品不明の
+    取引が購入者区分別の集計から機械的に除外されてしまい、「一般顧客なのに
+    商品不明」のような実態を表せなかった。2026-09-14、購入者区分(4分類:
+    スタッフ/社内購入/一般顧客/購入者不明)と商品特定状態(2分類:商品特定済み/
+    商品不明)を、それぞれ独立に「合計が物販総売上と一致する」軸として管理する
+    方式に改めた。1つの取引が両方の属性(例:購入者=一般顧客、商品=商品不明)を
+    同時に持てる。
     """
-    if not product_known:
-        return "商品不明"
-    if purchaser_type == "一般顧客":
-        return "一般顧客"
-    if purchaser_type == "スタッフ":
-        return "スタッフ"
-    if purchaser_type == "不明":
-        return "購入者区分不明"
-    return "その他"  # 到達しない想定のセーフティネット
+    return "商品特定済み" if product_known else "商品不明"
 
 
 @dataclass
@@ -182,8 +185,8 @@ class ProductTransaction:
     date: str
     sheet_row: int
     customer_name: str | None
-    purchaser_type: str
-    primary_bucket: str  # 一般顧客/スタッフ/購入者区分不明/商品不明/その他(排他的・合計が総売上と一致)
+    purchaser_type: str  # スタッフ/社内購入/一般顧客/購入者不明(排他的・合計が総売上と一致)
+    product_status: str  # 商品特定済み/商品不明(購入者区分とは独立した軸。排他的・合計が総売上と一致)
     product_name: str
     quantity: float | None
     regular_price_incl_tax_expected: float | None
@@ -222,8 +225,10 @@ def _staff_price_for_general_flag(
     """一般顧客・購入者区分不明の取引が、実は社割(スタッフ)価格と一致していないかを確認する。
 
     一致していても自動的に不正とはせず、「要現場確認」の追加フラグとして抽出するのみ。
+    スタッフ・社内購入(別名マスターで判定済み)には適用しない(既に社内購入者と
+    確認済みのため、このフラグの対象外)。
     """
-    if purchaser_type not in ("一般顧客", "不明"):
+    if purchaser_type not in ("一般顧客", "購入者不明"):
         return None
     staff_records = staff_price_rules.get(product_name)
     if not staff_records:
@@ -233,7 +238,7 @@ def _staff_price_for_general_flag(
         return None
     expected_staff_total = staff_rec["explicit_staff_price_incl_tax"] * qty
     if abs(gross_incl_tax - expected_staff_total) < 0.01 or abs(net_incl_tax - expected_staff_total) < 0.01:
-        return f"一般顧客/区分不明だが実売価格が社割(スタッフ)価格({staff_rec['explicit_staff_price_incl_tax']}円)と一致"
+        return f"一般顧客/購入者不明だが実売価格が社割(スタッフ)価格({staff_rec['explicit_staff_price_incl_tax']}円)と一致"
     return None
 
 
@@ -277,7 +282,7 @@ def audit_transaction(
         # 集計スクリプト側で「金額不明」取引として別掲し、正常売上合計には含めない)。
         return ProductTransaction(
             date=date, sheet_row=row, customer_name=customer_name,
-            purchaser_type=purchaser_type, primary_bucket=determine_primary_bucket(purchaser_type, False),
+            purchaser_type=purchaser_type, product_status=determine_product_status(False),
             product_name=product_name, quantity=quantity,
             regular_price_incl_tax_expected=None, staff_price_incl_tax_expected=None,
             actual_price_incl_tax=gross_incl_tax, discount_incl_tax=discount_incl_tax,
@@ -308,7 +313,7 @@ def audit_transaction(
             flags.append(ld)
         return ProductTransaction(
             date=date, sheet_row=row, customer_name=customer_name,
-            purchaser_type=purchaser_type, primary_bucket=determine_primary_bucket(purchaser_type, False),
+            purchaser_type=purchaser_type, product_status=determine_product_status(False),
             product_name=product_name, quantity=quantity,
             regular_price_incl_tax_expected=None, staff_price_incl_tax_expected=None,
             actual_price_incl_tax=gross_incl_tax, discount_incl_tax=discount_incl_tax,
@@ -331,7 +336,7 @@ def audit_transaction(
             flags.append(ld)
         return ProductTransaction(
             date=date, sheet_row=row, customer_name=customer_name,
-            purchaser_type=purchaser_type, primary_bucket=determine_primary_bucket(purchaser_type, True),
+            purchaser_type=purchaser_type, product_status=determine_product_status(True),
             product_name=product_name, quantity=quantity,
             regular_price_incl_tax_expected=None, staff_price_incl_tax_expected=None,
             actual_price_incl_tax=gross_incl_tax, discount_incl_tax=discount_incl_tax,
@@ -472,7 +477,7 @@ def audit_transaction(
 
     return ProductTransaction(
         date=date, sheet_row=row, customer_name=customer_name,
-        purchaser_type=purchaser_type, primary_bucket=determine_primary_bucket(purchaser_type, True),
+        purchaser_type=purchaser_type, product_status=determine_product_status(True),
         product_name=product_name, quantity=quantity,
         regular_price_incl_tax_expected=regular_price,
         staff_price_incl_tax_expected=staff_price_expected,

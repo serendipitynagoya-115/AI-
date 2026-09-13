@@ -237,23 +237,42 @@ def main():
     cost_confirmed_txs = [t for t in all_transactions if t.cost_confirmed]
     cost_unconfirmed_txs = [t for t in all_transactions if not t.cost_confirmed]
 
-    # 調査2: 全取引を「一般顧客/スタッフ/購入者区分不明/商品不明/その他」の5分類に
-    # 排他的に振り分け、5分類の合計売上が物販総売上と一致することを検証する。
-    buckets = ["一般顧客", "スタッフ", "購入者区分不明", "商品不明", "その他"]
-    bucket_revenue = {
-        b: sum_attr([t for t in all_transactions if t.primary_bucket == b], "tax_excl_revenue")
-        for b in buckets
-    }
+    # 調査2: 「購入者区分」(スタッフ/社内購入/一般顧客/購入者不明)と「商品特定状態」
+    # (商品特定済み/商品不明)を、それぞれ独立の軸として集計する(2026-09-14確定)。
+    # 商品不明だからといって購入者区分の集計から除外せず、逆も行わない。
+    # 1つの取引が両方の属性(例:購入者=一般顧客、商品=商品不明)を同時に持てる。
+    # 各軸それぞれの合計が物販総売上と一致することを検証する。
     total_revenue = sum_attr(all_transactions, "tax_excl_revenue")
-    bucket_sum = round(sum(bucket_revenue.values()), 2)
-    bucket_check_diff = round(bucket_sum - total_revenue, 2)
-    if abs(bucket_check_diff) >= 1.0:
+
+    purchaser_types = ["スタッフ", "社内購入", "一般顧客", "購入者不明"]
+    purchaser_revenue = {
+        p: sum_attr([t for t in all_transactions if t.purchaser_type == p], "tax_excl_revenue")
+        for p in purchaser_types
+    }
+    purchaser_sum = round(sum(purchaser_revenue.values()), 2)
+    purchaser_check_diff = round(purchaser_sum - total_revenue, 2)
+    if abs(purchaser_check_diff) >= 1.0:
         logger.error(
-            f"5分類の合計({bucket_sum})が物販総売上({total_revenue})と一致しません(差={bucket_check_diff})。"
-            "この監査は完成扱いにできません。"
+            f"購入者区分別合計({purchaser_sum})が物販総売上({total_revenue})と一致しません"
+            f"(差={purchaser_check_diff})。この監査は完成扱いにできません。"
         )
     else:
-        logger.info(f"5分類の合計は物販総売上と一致しました(差={bucket_check_diff})。")
+        logger.info(f"購入者区分別合計は物販総売上と一致しました(差={purchaser_check_diff})。")
+
+    product_statuses = ["商品特定済み", "商品不明"]
+    product_status_revenue = {
+        s: sum_attr([t for t in all_transactions if t.product_status == s], "tax_excl_revenue")
+        for s in product_statuses
+    }
+    product_status_sum = round(sum(product_status_revenue.values()), 2)
+    product_status_check_diff = round(product_status_sum - total_revenue, 2)
+    if abs(product_status_check_diff) >= 1.0:
+        logger.error(
+            f"商品特定状態別合計({product_status_sum})が物販総売上({total_revenue})と一致しません"
+            f"(差={product_status_check_diff})。この監査は完成扱いにできません。"
+        )
+    else:
+        logger.info(f"商品特定状態別合計は物販総売上と一致しました(差={product_status_check_diff})。")
 
     # 調査3: 在庫帳(店舗スタッフによる手入力の日別販売数量・原価集計)と、監査エンジンが
     # 日別シートの取引明細から積み上げた商品ごとの数量・原価を突き合わせる。
@@ -340,19 +359,33 @@ def main():
         },
         "revenue_excl_tax": {
             "total": total_revenue,
-            **{f"bucket_{b}": v for b, v in bucket_revenue.items()},
-            "bucket_sum_check_diff": bucket_check_diff,
+            "by_purchaser_type": {**purchaser_revenue, "check_diff": purchaser_check_diff},
+            "by_product_status": {**product_status_revenue, "check_diff": product_status_check_diff},
         },
         "cost_excl_tax": {
-            "total_confirmed": sum_attr(cost_confirmed_txs, "cost_excl_tax_total"),
+            # 実績原価。在庫帳当月販売金額・日別数量×原価・在庫増減式の3方式が一致することを
+            # 確認済み(product-audit-spec.md §9)。管理会計上の売上原価として使用する。
+            "actual_total": sum_attr(cost_confirmed_txs, "cost_excl_tax_total"),
         },
         "gross_profit": {
-            "total_confirmed": sum_attr(cost_confirmed_txs, "gross_profit"),
+            # 管理会計上の物販粗利益: 物販売上総額 - 実績売上原価。価格監査・商品特定の
+            # 未確定があっても、売上自体を管理会計の集計から除外しない(2026-09-14確定)。
+            "management_accounting": round(total_revenue - sum_attr(cost_confirmed_txs, "cost_excl_tax_total"), 2),
+            # 商品特定済み粗利益(旧称:確定粗利益): 商品不明(原価不明)を除いた、
+            # 原価が判明している取引範囲のみの粗利益。監査上の確認範囲を示す別指標であり、
+            # 管理会計上の物販粗利益とは異なる(2026-09-14確定。product-audit-spec.md §9)。
+            "product_identified_confirmed": sum_attr(cost_confirmed_txs, "gross_profit"),
         },
-        "gross_margin_confirmed": (
-            round(sum_attr(cost_confirmed_txs, "gross_profit") / sum_attr(cost_confirmed_txs, "tax_excl_revenue"), 4)
-            if sum_attr(cost_confirmed_txs, "tax_excl_revenue") else None
-        ),
+        "gross_margin": {
+            "management_accounting": (
+                round((total_revenue - sum_attr(cost_confirmed_txs, "cost_excl_tax_total")) / total_revenue, 4)
+                if total_revenue else None
+            ),
+            "product_identified_confirmed": (
+                round(sum_attr(cost_confirmed_txs, "gross_profit") / sum_attr(cost_confirmed_txs, "tax_excl_revenue"), 4)
+                if sum_attr(cost_confirmed_txs, "tax_excl_revenue") else None
+            ),
+        },
         "cost_confirmed_transaction_count": len(cost_confirmed_txs),
         "cost_unconfirmed_transaction_count": len(cost_unconfirmed_txs),
         "revenue_excl_tax_cost_confirmed": sum_attr(cost_confirmed_txs, "tax_excl_revenue"),
@@ -369,7 +402,7 @@ def main():
         detail_rows.append({
             "date": t.date, "row": t.sheet_row,
             "customer_name": t.customer_name or "(空欄)",
-            "purchaser_type": t.purchaser_type, "primary_bucket": t.primary_bucket,
+            "purchaser_type": t.purchaser_type, "product_status": t.product_status,
             "product_name": t.product_name,
             "quantity": t.quantity,
             "regular_price_incl_tax_expected": t.regular_price_incl_tax_expected,
@@ -391,7 +424,7 @@ def main():
     detail_path = out_dir / f"{store_id}_product_audit_detail.csv"
     io_utils.write_csv(
         detail_path, detail_rows,
-        fieldnames=["date", "row", "customer_name", "purchaser_type", "primary_bucket", "product_name",
+        fieldnames=["date", "row", "customer_name", "purchaser_type", "product_status", "product_name",
                     "quantity", "regular_price_incl_tax_expected", "staff_price_incl_tax_expected",
                     "actual_price_incl_tax", "discount_incl_tax", "tax_excl_revenue",
                     "cost_excl_tax_total", "gross_profit", "gross_margin",
