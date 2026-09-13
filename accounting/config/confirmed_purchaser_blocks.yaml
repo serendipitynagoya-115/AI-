@@ -1,0 +1,81 @@
+# 確定済み「同一購入者・連続購入ブロック」マスター
+#
+# 背景: 守山の日報では、同じ人が複数商品をまとめて購入した場合、最初の商品行だけ
+# 顧客名(B列)を入力し、その後に続く同一購入者の商品行は顧客名を空欄にして入力する
+# 運用がある。したがって「顧客名が空欄=購入者不明」とは限らない。
+#
+# ただし、この慣習が実際にどの範囲まで適用されているかを機械的に断定するのは
+# リスクが高い(空欄=本当に購入者不明な一見客のケースも多数ある)。このため、
+# ここには「オーナーが日報原本を確認し、同一購入者の連続購入ブロックだと確定した
+# 範囲」だけを明示登録する。範囲外の空欄行は、従来通り「購入者不明」のまま扱う。
+#
+# start_row〜end_row(両端含む)の範囲内で、顧客名(B列)が空欄の行にだけ
+# purchaser_nameを適用する(すでに名前が入力されている行は上書きしない)。
+#
+# 推測で範囲を広げず、オーナー確認済みの範囲だけを追加すること。
+# (2026-09-15確定。accounting/docs/product-audit-spec.md §12参照)
+
+blocks:
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-05"
+    start_row: 12
+    end_row: 15
+    purchaser_name: 辻明子
+    note: MVM・リポソームビタミンC・プロテイン・スローグリーンコーヒーの連続購入。辻明子は社内購入者(staff_aliases.yaml参照)。
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-10"
+    start_row: 19
+    end_row: 21
+    purchaser_name: 小川麻菜
+    note: MVM・リポソームビタミンC・ファーストステップローションの連続購入。
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-10"
+    start_row: 22
+    end_row: 28
+    purchaser_name: ひらたえりか
+    note: プロテイン・インカ・有機緑茶パウダー・有機ほうじ茶パウダー・MAKE BALANCEシェイカー・アガベシロップ・MVMの連続購入。
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-10"
+    start_row: 29
+    end_row: 33
+    purchaser_name: おぜきりか
+    note: プロテイン・アガベシロップ・インカ・有機ほうじ茶パウダー・MVMの連続購入。
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-11"
+    start_row: 5
+    end_row: 6
+    purchaser_name: こたぎりけいこ
+    note: プロテインに続くMVMも同一購入者。
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-27"
+    start_row: 22
+    end_row: 25
+    purchaser_name: 小川麻菜
+    note: リセットフローラ・リポソームビタミンC・アガベシロップ・スローグリーンコーヒーの連続購入。
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-27"
+    start_row: 26
+    end_row: 27
+    purchaser_name: 西原ゆかり
+    note: ドクターセレン(マグネシウム)・リポソームビタミンCの連続購入。
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-27"
+    start_row: 28
+    end_row: 30
+    purchaser_name: おぜきりか
+    note: プロテイン・ドクターセレン(マグネシウム)・有機緑茶パウダーの連続購入。
+  - store_id: moriyama
+    year_month: "2026-08"
+    date: "2026-08-31"
+    start_row: 17
+    end_row: 19
+    purchaser_name: 澄川真
+    note: KALA・プロテイン・MVMの連続購入。

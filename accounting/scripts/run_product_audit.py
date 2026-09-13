@@ -54,6 +54,18 @@ def parse_args():
         "--staff-aliases",
         default=str(Path(__file__).resolve().parent.parent / "config" / "staff_aliases.yaml"),
     )
+    p.add_argument(
+        "--purchaser-blocks",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_purchaser_blocks.yaml"),
+    )
+    p.add_argument(
+        "--category-reclassifications",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_category_reclassifications.yaml"),
+    )
+    p.add_argument(
+        "--status-overrides",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_status_overrides.yaml"),
+    )
     return p.parse_args()
 
 
@@ -83,10 +95,12 @@ def extract_retail_rows(ws, sheet: str):
     ルール1〜3・11と同じ考え方)。この場合、商品名は「無」のまま監査に回し、
     価格履歴と突き合わせられないため H(商品不明)として検出させる。
 
-    I列(備考)の生値も取得する。守山8月の実データで、売上シェア分担入力の
-    「無」側行にI列「売上シェア」の明示記載があることを確認しており(2026-09-15、
-    product-audit-spec.md §11)、店舗・月をまたいで同様の記載があれば
-    detect_and_apply_shared_salesがそれを最優先の判定根拠として使う。
+    I列の生値も取得する。I列は単純な「備考」欄ではなく、「既存 単発・回数券」
+    (施術チケットの種別)を記録する欄だが、特殊運用として「売上シェア」という
+    文字列が入力される場合がある(2026-09-15オーナー確認、product-audit-spec.md §13)。
+    守山8月の実データで、売上シェア分担入力の「無」側行にI列「売上シェア」の明示記載が
+    あることを確認しており(product-audit-spec.md §11)、店舗・月をまたいで同様の記載が
+    あればdetect_and_apply_shared_salesがそれを最優先の判定根拠として使う。
     記載が無い店舗・月では、この列は単にNoneのまま扱われ、判定には影響しない。"""
     rows = []
     for row in list(range(DATA_START_ROW, DATA_END_ROW + 1)) + list(range(OVERFLOW_START_ROW, OVERFLOW_END_ROW + 1)):
@@ -114,6 +128,7 @@ def extract_retail_rows(ws, sheet: str):
             "gross_incl_tax": p, "discount_incl_tax": t, "net_incl_tax": w,
             "tax_excl_revenue": af, "revenue_error": af_is_error,
             "customer_name": b, "staff_col": c, "category_label": d, "note_raw": note_raw,
+            "purchaser_name_note": "",
         })
     return rows
 
@@ -138,12 +153,30 @@ def main():
     price_history_path = Path(args.price_history)
     staff_rules_path = Path(args.staff_price_rules)
     staff_aliases_path = Path(args.staff_aliases)
+    purchaser_blocks_path = Path(args.purchaser_blocks)
+    category_reclass_path = Path(args.category_reclassifications)
+    status_overrides_path = Path(args.status_overrides)
     price_history = product_audit.load_price_history(price_history_path)
     staff_price_rules = product_audit.load_staff_price_rules(staff_rules_path)
     staff_aliases = product_audit.load_staff_aliases(staff_aliases_path) if staff_aliases_path.exists() else {}
+    purchaser_blocks = (
+        product_audit.load_confirmed_purchaser_blocks(purchaser_blocks_path)
+        if purchaser_blocks_path.exists() else []
+    )
+    category_reclass_map = (
+        product_audit.load_confirmed_category_reclassifications(category_reclass_path)
+        if category_reclass_path.exists() else {}
+    )
+    status_overrides = (
+        product_audit.load_confirmed_status_overrides(status_overrides_path)
+        if status_overrides_path.exists() else {}
+    )
     logger.info(f"価格履歴マスター読み込み: {len(price_history)}商品 ({price_history_path})")
     logger.info(f"スタッフ価格履歴マスター読み込み: {len(staff_price_rules)}商品 ({staff_rules_path})")
     logger.info(f"スタッフ・社内購入者の別名マスター読み込み: {len(staff_aliases)}件 ({staff_aliases_path})")
+    logger.info(f"確定済み連続購入ブロック読み込み: {len(purchaser_blocks)}件 ({purchaser_blocks_path})")
+    logger.info(f"確定済み区分振替マスター読み込み: {len(category_reclass_map)}件 ({category_reclass_path})")
+    logger.info(f"確定済みステータス上書きマスター読み込み: {len(status_overrides)}件 ({status_overrides_path})")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -153,6 +186,7 @@ def main():
     logger.info(f"担当スタッフ名一覧(購入者区分の判定に使用): {staff_names}")
 
     all_transactions: list[product_audit.ProductTransaction] = []
+    all_reclassified_rows: list[dict] = []
     day_reconciliation_rows = []
     for day in xlsx_report.DAY_SHEETS:
         if day not in wb.sheetnames:
@@ -160,6 +194,31 @@ def main():
         ws = wb[day]
         date_key = f"{year_month}-{int(day):02d}"
         day_retail_rows = extract_retail_rows(ws, day)
+
+        # 確定済み「同一購入者・連続購入ブロック」(§12): 顧客名が空欄の行に、
+        # 起点行の購入者名を適用する。オーナー確認済みの範囲だけに限定する。
+        product_audit.apply_confirmed_purchaser_blocks(
+            day_retail_rows, store_id=store_id, year_month=year_month,
+            date_key=date_key, blocks=purchaser_blocks,
+        )
+
+        # 確定済み区分振替(§14): 実際には物販ではなく施術・回数券(既存)側の売上と
+        # 確定した行を、物販監査の対象から完全に除外する。
+        kept_rows = []
+        day_reclassified = []
+        for r in day_retail_rows:
+            rec = category_reclass_map.get((store_id, year_month, date_key, r["row"]))
+            if rec is not None:
+                day_reclassified.append({**r, **rec})
+                logger.info(
+                    f"[{day}日] 行{r['row']}: 物販監査から除外し、施術/既存側へ振替"
+                    f"(税抜{rec['tax_excl_revenue']}円、{rec['reclassified_as']})"
+                )
+                continue
+            kept_rows.append(r)
+        day_retail_rows = kept_rows
+        all_reclassified_rows.extend(day_reclassified)
+
         day_txs = []
         for r in day_retail_rows:
             tx = product_audit.audit_transaction(
@@ -170,24 +229,29 @@ def main():
                 net_incl_tax=r["net_incl_tax"], tax_excl_revenue=r["tax_excl_revenue"],
                 price_history=price_history, staff_price_rules=staff_price_rules,
                 staff_names=staff_names, staff_aliases=staff_aliases, revenue_error=r["revenue_error"],
-                note_raw=r["note_raw"],
+                note_raw=r["note_raw"], purchaser_name_note=r["purchaser_name_note"],
             )
             day_txs.append(tx)
         all_transactions.extend(day_txs)
 
         # 調査1: 日別シートAF54(物販税別合計)と、監査エンジンがその日に認識した
         # 物販税抜売上の合計を突き合わせる。1円以上ずれた場合は行番号まで特定する。
+        # AF54はD列(新規/既存/物販)を区別しない単純合計(=SUMIF(AF4:AF53,">0"))のため、
+        # 区分振替(§14)で物販監査から除外した行の分だけ、監査エンジン側の合計より
+        # 大きくなる。この既知の差額(day_reclass_total)を戻して比較する。
         af54_raw = ws["AF54"].value
         af54 = None if (isinstance(af54_raw, str) and af54_raw.startswith("#")) else (af54_raw or 0)
         engine_sum = round(sum(t.tax_excl_revenue for t in day_txs), 2)
-        diff = None if af54 is None else round(engine_sum - af54, 2)
+        day_reclass_total = round(sum(r["tax_excl_revenue"] for r in day_reclassified), 2)
+        diff = None if af54 is None else round(engine_sum + day_reclass_total - af54, 2)
         day_reconciliation_rows.append({
             "day": day, "af54_report": af54, "engine_sum": engine_sum,
-            "diff": diff, "transaction_count": len(day_txs),
+            "reclassified_total": day_reclass_total, "diff": diff, "transaction_count": len(day_txs),
         })
         if diff is not None and abs(diff) >= 1.0:
             logger.error(
-                f"[{day}日] 物販売上の不一致を検出: AF54={af54} / 監査エンジン={engine_sum} (差={diff})"
+                f"[{day}日] 物販売上の不一致を検出: AF54={af54} / 監査エンジン={engine_sum} "
+                f"/ 施術・既存へ振替={day_reclass_total} (差={diff})"
             )
             for r in day_retail_rows:
                 logger.error(
@@ -196,6 +260,19 @@ def main():
                 )
 
     logger.info(f"物販取引を{len(all_transactions)}件抽出しました。")
+    if all_reclassified_rows:
+        total_reclassified = round(sum(r["tax_excl_revenue"] for r in all_reclassified_rows), 2)
+        logger.info(
+            f"区分振替(物販から施術/既存へ): {len(all_reclassified_rows)}件・税抜合計{total_reclassified}円"
+        )
+
+    # 確定済みステータス上書き(§15): classification自体は変更せず、severityのみ
+    # 「分類保留」に変更する(事実は確定済みだが、社割ルール等のマスター登録が未了のもの)。
+    overrides_applied = product_audit.apply_confirmed_status_overrides(
+        all_transactions, store_id=store_id, year_month=year_month, overrides=status_overrides,
+    )
+    if overrides_applied:
+        logger.info(f"確定済みステータス上書きを適用: {overrides_applied}件(severity→分類保留)")
 
     # 売上シェア(1商品を複数スタッフで分担入力)の検出。物販売上総額・元Excelは変更せず、
     # 該当取引のclassification・severity等のみ調整する(2026-09-15確定。
@@ -232,21 +309,41 @@ def main():
     day_reconciliation_path = reconciliation_out_dir / f"{store_id}_af54_vs_engine.csv"
     io_utils.write_csv(
         day_reconciliation_path, day_reconciliation_rows,
-        fieldnames=["day", "af54_report", "engine_sum", "diff", "transaction_count"],
+        fieldnames=["day", "af54_report", "engine_sum", "reclassified_total", "diff", "transaction_count"],
     )
     logger.info(f"日別AF54突合結果を出力: {day_reconciliation_path}")
 
+    category_reclass_path_out = reconciliation_out_dir / f"{store_id}_category_reclassifications.csv"
+    category_reclass_csv_rows = [
+        {
+            "date": r["date"], "row": r["row"], "customer_name": r.get("customer_name") or "(空欄)",
+            "staff_col": r.get("staff_col") or "", "product": r.get("product") or "",
+            "tax_excl_revenue": r["tax_excl_revenue"], "reclassified_as": r["reclassified_as"],
+            "reason": r["reason"].strip(),
+        }
+        for r in all_reclassified_rows
+    ]
+    io_utils.write_csv(
+        category_reclass_path_out, category_reclass_csv_rows,
+        fieldnames=["date", "row", "customer_name", "staff_col", "product",
+                    "tax_excl_revenue", "reclassified_as", "reason"],
+    )
+    logger.info(f"区分振替(物販除外)一覧を出力: {category_reclass_path_out}({len(category_reclass_csv_rows)}件)")
+
     total_af54 = sum(r["af54_report"] or 0 for r in day_reconciliation_rows if r["af54_report"] is not None)
     total_engine = sum(r["engine_sum"] for r in day_reconciliation_rows)
-    total_diff = round(total_engine - total_af54, 2)
+    total_reclassified_all = round(sum(r["reclassified_total"] for r in day_reconciliation_rows), 2)
+    total_diff = round(total_engine + total_reclassified_all - total_af54, 2)
     if abs(total_diff) >= 1.0:
         logger.error(
-            f"月合計で不一致: SUM(AF54)={total_af54} / 監査エンジン合計={total_engine} (差={total_diff})。"
-            "この監査は完成扱いにできません。"
+            f"月合計で不一致: SUM(AF54)={total_af54} / 監査エンジン合計={total_engine} "
+            f"/ 施術・既存へ振替={total_reclassified_all} (差={total_diff})。この監査は完成扱いにできません。"
         )
     else:
         logger.info(
-            f"月合計はSUM(AF54)={total_af54}と監査エンジン合計={total_engine}で一致しました(差={total_diff})。"
+            f"月合計はSUM(AF54)={total_af54}と監査エンジン合計+区分振替額"
+            f"({total_engine}+{total_reclassified_all}={round(total_engine + total_reclassified_all, 2)})で一致しました"
+            f"(差={total_diff})。区分振替はカテゴリの訂正のみで、入金額の総額は変わりません。"
         )
 
     # --- 集計 ---
@@ -255,7 +352,7 @@ def main():
         classification_counts[tx.classification] = classification_counts.get(tx.classification, 0) + 1
     logger.info(f"判定件数: {classification_counts}")
 
-    severity_counts = {"正常": 0, "既知差異": 0, "注意": 0, "要確認": 0, "重大エラー": 0}
+    severity_counts = {"正常": 0, "既知差異": 0, "分類保留": 0, "注意": 0, "要確認": 0, "重大エラー": 0}
     for tx in all_transactions:
         severity_counts[tx.severity] = severity_counts.get(tx.severity, 0) + 1
     logger.info(f"重大度件数: {severity_counts}")
@@ -402,8 +499,15 @@ def main():
             "candidate_row_count": sum(g["share_count"] for g in candidate_share_groups),
             "output_csv": str(shared_sales_path),
         },
+        "category_reclassifications": {
+            # 物販監査から除外し、施術/回数券(既存)側の売上へ振替した行(§14)。
+            "count": len(all_reclassified_rows),
+            "total_tax_excl_revenue": total_reclassified_all,
+            "output_csv": str(category_reclass_path_out),
+        },
         "af54_reconciliation": {
             "sum_af54": round(total_af54, 2), "engine_total": round(total_engine, 2),
+            "reclassified_total": total_reclassified_all,
             "diff": total_diff, "matches": abs(total_diff) < 1.0,
         },
         "revenue_excl_tax": {
@@ -469,6 +573,7 @@ def main():
             "severity": t.severity,
             "flags": "・".join(t.flags) if t.flags else "",
             "purchaser_alias_note": t.purchaser_alias_note,
+            "purchaser_name_note": t.purchaser_name_note,
             "transaction_type": t.transaction_type,
             "share_group_id": t.share_group_id or "",
             "share_count": t.share_count,
@@ -485,7 +590,7 @@ def main():
                     "actual_price_incl_tax", "discount_incl_tax", "tax_excl_revenue",
                     "cost_excl_tax_total", "gross_profit", "gross_margin",
                     "classification", "classification_detail", "price_status", "cost_confirmed",
-                    "severity", "flags", "purchaser_alias_note",
+                    "severity", "flags", "purchaser_alias_note", "purchaser_name_note",
                     "transaction_type", "share_group_id", "share_count", "share_total",
                     "linked_product", "linked_rows", "share_marker_raw"],
     )
@@ -498,14 +603,24 @@ def main():
     io_utils.write_csv(known_discrepancy_path, known_discrepancy_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
     logger.info(f"既知差異一覧を出力: {known_discrepancy_path}({len(known_discrepancy_rows)}件)")
 
+    # 分類保留一覧: 事実関係は確定済みだが、社割ルール等のマスター登録が未了のもの(§15)。
+    # 「既知差異」と同様、原因不明の要確認とは区別し、要確認一覧からは除外する。
+    pending_classification_rows = [r for r in detail_rows if r["severity"] == "分類保留"]
+    pending_classification_path = out_dir / f"{store_id}_product_audit_pending_classification.csv"
+    io_utils.write_csv(
+        pending_classification_path, pending_classification_rows,
+        fieldnames=detail_rows[0].keys() if detail_rows else [],
+    )
+    logger.info(f"分類保留一覧を出力: {pending_classification_path}({len(pending_classification_rows)}件)")
+
     # 要確認一覧(P項目): 重大度が「注意/要確認/重大エラー」の取引を含める。
-    # 「既知差異」は原因特定済みのため、要確認一覧からは明示的に除外する。
+    # 「既知差異」「分類保留」は原因・事実関係が確定済みのため、要確認一覧からは明示的に除外する。
     # 判定区分がA(正常)であっても、追加フラグ(異常値引き・社割価格流用の可能性等)により
     # 重大度が引き上げられている取引を取りこぼさないため、classificationではなくseverityで判定する。
-    error_rows = [r for r in detail_rows if r["severity"] not in ("正常", "既知差異")]
+    error_rows = [r for r in detail_rows if r["severity"] not in ("正常", "既知差異", "分類保留")]
     error_path = out_dir / f"{store_id}_product_audit_errors.csv"
     io_utils.write_csv(error_path, error_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
-    logger.info(f"要確認一覧(正常・既知差異を除く)を出力: {error_path}({len(error_rows)}件)")
+    logger.info(f"要確認一覧(正常・既知差異・分類保留を除く)を出力: {error_path}({len(error_rows)}件)")
 
     unconfirmed_rows = [r for r in detail_rows if not r["cost_confirmed"]]
     unconfirmed_path = out_dir / f"{store_id}_product_audit_cost_unconfirmed.csv"
@@ -524,8 +639,9 @@ def main():
         store_id=f"{store_id}_product_audit", year_month=year_month,
         source_file_sha256=source_hash, source_file_path=str(source_path),
         output_paths=[str(summary_path), str(detail_path), str(error_path), str(unconfirmed_path),
-                      str(known_discrepancy_path), str(day_reconciliation_path), str(inventory_recon_path),
-                      str(shared_sales_path)],
+                      str(known_discrepancy_path), str(pending_classification_path),
+                      str(day_reconciliation_path), str(inventory_recon_path),
+                      str(shared_sales_path), str(category_reclass_path_out)],
     )
     if ledger_info["is_rerun_same_source"]:
         logger.info("同一ソースファイルでの再実行です。出力は上書きされ、二重計上は発生していません。")

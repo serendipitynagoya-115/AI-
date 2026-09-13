@@ -66,10 +66,13 @@ PRICE_STATUS_BY_CLASSIFICATION = {
 # 売上シェア(1商品を複数スタッフで分担入力)の金額一致を判定する許容誤差(円)。
 SHARE_AMOUNT_TOLERANCE_YEN = 1.0
 
-# 日報Excelの備考列(I列)に記載される、売上シェア入力であることの明示マーカー文字列。
-# 2026-09-15、守山8月の実データで、シェア分担側の行(「無」行)にI列「売上シェア」の
-# 記載があることを確認した(product-audit-spec.md §11)。これが存在する場合は、
-# 金額の一致・近接行等の推測より優先する一次証跡として扱う。
+# 日報ExcelのI列に記載される、売上シェア入力であることの明示マーカー文字列。
+# I列は単純な「備考」欄ではなく、「既存 単発・回数券」(施術チケットの種別)を記録する欄だが、
+# 特殊運用として「売上シェア」という文字列が入力される場合がある(2026-09-15オーナー確認、
+# product-audit-spec.md §13)。2026-09-15、守山8月の実データで、シェア分担側の行(「無」行)に
+# I列「売上シェア」の記載があることを確認した(product-audit-spec.md §11)。これが存在する場合は、
+# 金額の一致・近接行等の推測より優先する一次証跡として扱う(I列自体の意味を「売上シェア専用欄」と
+# 再定義するものではない)。
 SHARE_MARKER_LABEL = "売上シェア"
 
 _SEVERITY_RANK = {"正常": 0, "注意": 1, "要確認": 2, "重大エラー": 3}
@@ -123,6 +126,84 @@ def load_staff_aliases(path: Path) -> dict:
         if key:
             aliases[key] = {"formal_name": rec["formal_name"], "note": rec.get("note") or ""}
     return aliases
+
+
+def load_confirmed_purchaser_blocks(path: Path) -> list[dict]:
+    """確定済み「同一購入者・連続購入ブロック」マスターを読み込む(2026-09-15確定、
+    product-audit-spec.md §12参照)。オーナーが日報原本を確認して確定した範囲だけを
+    保持し、推測で範囲を広げない。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    return doc.get("blocks", []) or []
+
+
+def apply_confirmed_purchaser_blocks(
+    rows: list[dict], *, store_id: str, year_month: str, date_key: str, blocks: list[dict],
+) -> None:
+    """確定済みブロック内で顧客名(customer_name)が空欄の行に、起点行の購入者名を適用する
+    (in-place)。既に顧客名が入力されている行は上書きしない。範囲外の空欄行には一切影響しない。
+    """
+    matching = [
+        b for b in blocks
+        if b["store_id"] == store_id and b["year_month"] == year_month and b["date"] == date_key
+    ]
+    if not matching:
+        return
+    for r in rows:
+        for b in matching:
+            if b["start_row"] <= r["row"] <= b["end_row"] and not r.get("customer_name"):
+                r["customer_name"] = b["purchaser_name"]
+                r["purchaser_name_note"] = (
+                    f"顧客名は空欄のため、確定済み連続購入ブロック({date_key} {b['start_row']}〜"
+                    f"{b['end_row']}行、起点の購入者「{b['purchaser_name']}」)により顧客名を適用"
+                    "(product-audit-spec.md §12)。"
+                )
+                break
+
+
+def load_confirmed_category_reclassifications(path: Path) -> dict[tuple, dict]:
+    """物販監査の対象から除外する、確定済みの区分振替マスターを読み込む(2026-09-15確定、
+    product-audit-spec.md §14参照)。キーは(store_id, year_month, date, row)。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    result = {}
+    for rec in doc.get("reclassifications", []) or []:
+        key = (rec["store_id"], rec["year_month"], rec["date"], rec["row"])
+        result[key] = rec
+    return result
+
+
+def load_confirmed_status_overrides(path: Path) -> dict[tuple, dict]:
+    """確定済みステータス上書きマスターを読み込む(2026-09-15確定、
+    product-audit-spec.md §15参照)。キーは(store_id, year_month, date, row)。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    result = {}
+    for rec in doc.get("overrides", []) or []:
+        key = (rec["store_id"], rec["year_month"], rec["date"], rec["row"])
+        result[key] = rec
+    return result
+
+
+def apply_confirmed_status_overrides(
+    transactions: list[ProductTransaction], *, store_id: str, year_month: str, overrides: dict[tuple, dict],
+) -> int:
+    """確定済みステータス上書きを取引に反映する(in-place)。severityのみ変更し、
+    classification(価格・原価判定)自体は変更しない。適用件数を返す。
+    """
+    applied = 0
+    for t in transactions:
+        key = (store_id, year_month, t.date, t.sheet_row)
+        rec = overrides.get(key)
+        if rec is None:
+            continue
+        t.severity = rec["new_severity"]
+        t.classification_detail = t.classification_detail + " / " + rec["note"].strip()
+        applied += 1
+    return applied
 
 
 def _find_effective_record(records: list[dict], date_key: str) -> dict | None:
@@ -218,6 +299,7 @@ class ProductTransaction:
     severity: str = "正常"          # 正常/注意/既知差異/要確認/重大エラー
     flags: list[str] = field(default_factory=list)  # 追加の要確認事由(複数可)
     purchaser_alias_note: str = ""  # 別名(alias)経由でスタッフ/社内購入と判定した場合の備考
+    purchaser_name_note: str = ""  # 確定済み連続購入ブロックにより顧客名を適用した場合の注記(§12)
     # 売上シェア(1商品を複数スタッフで分担入力)関連(2026-09-15確定。product-audit-spec.md §11)。
     transaction_type: str = "normal_sale"  # normal_sale/shared_sale/shared_sale_candidate
     share_group_id: str | None = None
@@ -225,12 +307,25 @@ class ProductTransaction:
     share_total: float | None = None    # グループ全体の合計金額(規定価格と一致する額)
     linked_product: str | None = None   # グループが表す実際の商品名
     linked_rows: list[int] = field(default_factory=list)  # グループを構成する全行番号
-    share_marker_raw: str | None = None  # 日報I列(備考)の生値。「売上シェア」の明示記載を保持する。
+    share_marker_raw: str | None = None  # 日報I列(既存 単発・回数券欄)の生値。「売上シェア」の明示記載を保持する。
 
 
 def _has_share_marker(t: ProductTransaction) -> bool:
-    """日報I列(備考)に「売上シェア」の明示記載があるかどうかを返す。"""
+    """日報I列(既存 単発・回数券欄)に「売上シェア」の明示記載があるかどうかを返す。"""
     return bool(t.share_marker_raw) and str(t.share_marker_raw).strip() == SHARE_MARKER_LABEL
+
+
+def _qty_note(qty: float, gross_incl_tax: float, net_incl_tax: float, which: str) -> str:
+    """数量が2以上の価格不一致(C・D)について、単純な合計差額だけでは「1個分の売上が
+    抜けている」ように誤読されやすいため、実質単価も併記する(2026-09-15確定。
+    例:数量2・合計5,940円を「通常価格(1個分)との差額-5,940円」とだけ表示すると、
+    1個分の売上が丸ごと無いように読めるが、実際は2個×2,970円という単価の問題である)。
+    """
+    if not qty or qty == 1:
+        return ""
+    amount = gross_incl_tax if which == "値引前(gross)" else net_incl_tax
+    unit_price = round(amount / qty, 2)
+    return f"、数量{qty:g}個(実質単価{unit_price:g}円/個)"
 
 
 def _large_discount_flag(gross_incl_tax, discount_incl_tax) -> str | None:
@@ -293,6 +388,7 @@ def audit_transaction(
     product_name, quantity, gross_incl_tax, discount_incl_tax, net_incl_tax,
     tax_excl_revenue, price_history: dict, staff_price_rules: dict, staff_names: list[str],
     staff_aliases: dict | None = None, revenue_error: bool = False, note_raw: str | None = None,
+    purchaser_name_note: str = "",
 ) -> ProductTransaction:
     purchaser_type = classify_purchaser(customer_name, staff_names, staff_aliases)
     alias_rec = resolve_purchaser_alias(customer_name, staff_aliases)
@@ -321,6 +417,7 @@ def audit_transaction(
             severity=SEVERITY_BY_CLASSIFICATION["X"],
             flags=["売上金額が数式エラーで不明"],
             purchaser_alias_note=alias_note,
+            purchaser_name_note=purchaser_name_note,
             share_marker_raw=note_raw,
         )
 
@@ -352,6 +449,7 @@ def audit_transaction(
             severity=_escalate_severity(SEVERITY_BY_CLASSIFICATION["H"], "要確認" if flags else "正常"),
             flags=flags,
             purchaser_alias_note=alias_note,
+            purchaser_name_note=purchaser_name_note,
             share_marker_raw=note_raw,
         )
 
@@ -377,6 +475,7 @@ def audit_transaction(
             severity=_escalate_severity(SEVERITY_BY_CLASSIFICATION["G"], "要確認" if flags else "正常"),
             flags=flags,
             purchaser_alias_note=alias_note,
+            purchaser_name_note=purchaser_name_note,
             share_marker_raw=note_raw,
         )
 
@@ -450,7 +549,8 @@ def audit_transaction(
         elif abs(diff) <= ROUNDING_TOLERANCE_YEN:
             classification, detail = "B", f"丸め差の可能性({which}との差額{diff:+.2f}円、暫定許容範囲内)"
         else:
-            classification, detail = "D", f"スタッフ価格と不一致({which}との差額{diff:+.2f}円)"
+            classification = "D"
+            detail = f"スタッフ価格と不一致({which}との差額{diff:+.2f}円{_qty_note(qty, gross_incl_tax, net_incl_tax, which)})"
     else:
         # 一般顧客、または購入者区分「不明」(通常価格で判定)
         diff, which, _ = _best_match(expected_total_regular)
@@ -461,7 +561,8 @@ def audit_transaction(
         elif abs(diff) <= ROUNDING_TOLERANCE_YEN:
             classification, detail = "B", f"丸め差の可能性({which}との差額{diff:+.2f}円、暫定許容範囲内)"
         else:
-            classification, detail = "C", f"通常価格と不一致({which}との差額{diff:+.2f}円)"
+            classification = "C"
+            detail = f"通常価格と不一致({which}との差額{diff:+.2f}円{_qty_note(qty, gross_incl_tax, net_incl_tax, which)})"
 
     # 既知差異(K)の判定: C・D(価格不一致)になった場合のみ、取引日以外の期間の
     # 価格履歴レコードと実売価格(値引前)が一致しないか確認する。一致すれば、
@@ -518,6 +619,7 @@ def audit_transaction(
         price_status=PRICE_STATUS_BY_CLASSIFICATION[classification],
         severity=severity, flags=flags,
         purchaser_alias_note=alias_note,
+        purchaser_name_note=purchaser_name_note,
         share_marker_raw=note_raw,
     )
 
@@ -635,7 +737,7 @@ def detect_and_apply_shared_sales(transactions: list[ProductTransaction]) -> lis
 
     正式ルール(2026-09-15確定、product-audit-spec.md §11)。判定は次の優先順位で行う。
 
-    1. 日報I列(備考)に「売上シェア」の明示記載があるかを最優先の根拠として確認する
+    1. 日報I列(既存 単発・回数券欄)に「売上シェア」の明示記載があるかを最優先の根拠として確認する
        (SHARE_MARKER_LABEL・_has_share_marker)。明示記載は、店舗が自らその行を
        シェア分担入力だと記録した一次証跡であり、金額の一致や近接行からの推測より
        優先する。
