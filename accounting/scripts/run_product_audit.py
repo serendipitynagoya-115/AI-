@@ -81,7 +81,13 @@ def extract_retail_rows(ws, sheet: str):
     商品名(J列)が空欄・「無」であっても、物販売上(P列)が計上されている行は
     実在する取引として抽出する(商品名の有無を集計対象かどうかの条件にしない。
     ルール1〜3・11と同じ考え方)。この場合、商品名は「無」のまま監査に回し、
-    価格履歴と突き合わせられないため H(商品不明)として検出させる。"""
+    価格履歴と突き合わせられないため H(商品不明)として検出させる。
+
+    I列(備考)の生値も取得する。守山8月の実データで、売上シェア分担入力の
+    「無」側行にI列「売上シェア」の明示記載があることを確認しており(2026-09-15、
+    product-audit-spec.md §11)、店舗・月をまたいで同様の記載があれば
+    detect_and_apply_shared_salesがそれを最優先の判定根拠として使う。
+    記載が無い店舗・月では、この列は単にNoneのまま扱われ、判定には影響しない。"""
     rows = []
     for row in list(range(DATA_START_ROW, DATA_END_ROW + 1)) + list(range(OVERFLOW_START_ROW, OVERFLOW_END_ROW + 1)):
         j = ws[f"J{row}"].value
@@ -101,11 +107,13 @@ def extract_retail_rows(ws, sheet: str):
         b = ws[f"B{row}"].value
         c = ws[f"C{row}"].value
         d = ws[f"D{row}"].value
+        i_val = ws[f"I{row}"].value
+        note_raw = str(i_val).strip() if i_val not in (None, "") else None
         rows.append({
             "row": row, "product": str(j).strip(), "quantity": k,
             "gross_incl_tax": p, "discount_incl_tax": t, "net_incl_tax": w,
             "tax_excl_revenue": af, "revenue_error": af_is_error,
-            "customer_name": b, "staff_col": c, "category_label": d,
+            "customer_name": b, "staff_col": c, "category_label": d, "note_raw": note_raw,
         })
     return rows
 
@@ -162,6 +170,7 @@ def main():
                 net_incl_tax=r["net_incl_tax"], tax_excl_revenue=r["tax_excl_revenue"],
                 price_history=price_history, staff_price_rules=staff_price_rules,
                 staff_names=staff_names, staff_aliases=staff_aliases, revenue_error=r["revenue_error"],
+                note_raw=r["note_raw"],
             )
             day_txs.append(tx)
         all_transactions.extend(day_txs)
@@ -188,7 +197,38 @@ def main():
 
     logger.info(f"物販取引を{len(all_transactions)}件抽出しました。")
 
+    # 売上シェア(1商品を複数スタッフで分担入力)の検出。物販売上総額・元Excelは変更せず、
+    # 該当取引のclassification・severity等のみ調整する(2026-09-15確定。
+    # product-audit-spec.md §11参照)。
+    share_groups = product_audit.detect_and_apply_shared_sales(all_transactions)
+    confirmed_share_groups = [g for g in share_groups if g["transaction_type"] == "shared_sale"]
+    candidate_share_groups = [g for g in share_groups if g["transaction_type"] == "shared_sale_candidate"]
+    confirmed_2way_groups = [g for g in confirmed_share_groups if g["share_count"] == 2]
+    confirmed_3way_groups = [g for g in confirmed_share_groups if g["share_count"] == 3]
+    logger.info(
+        f"売上シェア検出: 確定{len(confirmed_share_groups)}グループ"
+        f"(2名{len(confirmed_2way_groups)}件・3名{len(confirmed_3way_groups)}件、"
+        f"計{sum(g['share_count'] for g in confirmed_share_groups)}行) / "
+        f"候補(未確定){len(candidate_share_groups)}グループ"
+        f"({sum(g['share_count'] for g in candidate_share_groups)}行)"
+    )
+    for g in share_groups:
+        logger.info(
+            f"  [{g['transaction_type']}] {g['date']} 行{g['linked_rows']} "
+            f"{g['linked_product']} 合計{g['share_total']}円 ({g['share_count']}名)"
+        )
+
     reconciliation_out_dir = io_utils.OUTPUT_DIR / "product_audit" / year_month
+    shared_sales_path = reconciliation_out_dir / f"{store_id}_shared_sales.csv"
+    shared_sales_csv_rows = [
+        {**g, "linked_rows": "・".join(str(r) for r in g["linked_rows"])} for g in share_groups
+    ]
+    io_utils.write_csv(
+        shared_sales_path, shared_sales_csv_rows,
+        fieldnames=["share_group_id", "transaction_type", "date", "linked_product",
+                    "share_count", "share_total", "linked_rows"],
+    )
+    logger.info(f"売上シェア検出結果を出力: {shared_sales_path}")
     day_reconciliation_path = reconciliation_out_dir / f"{store_id}_af54_vs_engine.csv"
     io_utils.write_csv(
         day_reconciliation_path, day_reconciliation_rows,
@@ -353,6 +393,15 @@ def main():
             "mismatch_count": len(inventory_reconciliation_rows),
             "output_csv": str(inventory_recon_path),
         },
+        "shared_sales": {
+            "confirmed_group_count": len(confirmed_share_groups),
+            "confirmed_2way_group_count": len(confirmed_2way_groups),
+            "confirmed_3way_group_count": len(confirmed_3way_groups),
+            "confirmed_row_count": sum(g["share_count"] for g in confirmed_share_groups),
+            "candidate_group_count": len(candidate_share_groups),
+            "candidate_row_count": sum(g["share_count"] for g in candidate_share_groups),
+            "output_csv": str(shared_sales_path),
+        },
         "af54_reconciliation": {
             "sum_af54": round(total_af54, 2), "engine_total": round(total_engine, 2),
             "diff": total_diff, "matches": abs(total_diff) < 1.0,
@@ -420,6 +469,13 @@ def main():
             "severity": t.severity,
             "flags": "・".join(t.flags) if t.flags else "",
             "purchaser_alias_note": t.purchaser_alias_note,
+            "transaction_type": t.transaction_type,
+            "share_group_id": t.share_group_id or "",
+            "share_count": t.share_count,
+            "share_total": t.share_total,
+            "linked_product": t.linked_product or "",
+            "linked_rows": "・".join(str(r) for r in t.linked_rows) if t.linked_rows else "",
+            "share_marker_raw": t.share_marker_raw or "",
         })
     detail_path = out_dir / f"{store_id}_product_audit_detail.csv"
     io_utils.write_csv(
@@ -429,7 +485,9 @@ def main():
                     "actual_price_incl_tax", "discount_incl_tax", "tax_excl_revenue",
                     "cost_excl_tax_total", "gross_profit", "gross_margin",
                     "classification", "classification_detail", "price_status", "cost_confirmed",
-                    "severity", "flags", "purchaser_alias_note"],
+                    "severity", "flags", "purchaser_alias_note",
+                    "transaction_type", "share_group_id", "share_count", "share_total",
+                    "linked_product", "linked_rows", "share_marker_raw"],
     )
     logger.info(f"取引明細を出力: {detail_path}")
 
@@ -457,6 +515,8 @@ def main():
     for cls in sorted(classification_counts):
         if cls == "K":
             logger.info(f"判定{cls}(既知差異): {classification_counts[cls]}件")
+        elif cls == "S":
+            logger.info(f"判定{cls}(売上シェア確定): {classification_counts[cls]}件")
         elif cls != "A":
             logger.warning(f"判定{cls}: {classification_counts[cls]}件")
 
@@ -464,7 +524,8 @@ def main():
         store_id=f"{store_id}_product_audit", year_month=year_month,
         source_file_sha256=source_hash, source_file_path=str(source_path),
         output_paths=[str(summary_path), str(detail_path), str(error_path), str(unconfirmed_path),
-                      str(known_discrepancy_path), str(day_reconciliation_path), str(inventory_recon_path)],
+                      str(known_discrepancy_path), str(day_reconciliation_path), str(inventory_recon_path),
+                      str(shared_sales_path)],
     )
     if ledger_info["is_rerun_same_source"]:
         logger.info("同一ソースファイルでの再実行です。出力は上書きされ、二重計上は発生していません。")

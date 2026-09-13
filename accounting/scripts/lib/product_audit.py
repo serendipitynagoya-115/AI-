@@ -13,6 +13,7 @@ accounting/docs/product-audit-spec.md の正式ルールに基づく。
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -42,6 +43,7 @@ SEVERITY_BY_CLASSIFICATION = {
     "H": "要確認",
     "I": "要確認",
     "K": "既知差異",  # 別期間の価格履歴と一致する既知の表示価格変動(product-audit-spec.md §8)
+    "S": "正常",      # 売上シェア(確定)。1商品を複数スタッフで分担入力(product-audit-spec.md §11)
     "X": "重大エラー",  # 物販売上(AF列)自体が数式エラーで金額不明
 }
 
@@ -57,8 +59,18 @@ PRICE_STATUS_BY_CLASSIFICATION = {
     "H": "価格要確認",
     "I": "価格要確認",
     "K": "既知差異",
+    "S": "価格確定",
     "X": "価格要確認",
 }
+
+# 売上シェア(1商品を複数スタッフで分担入力)の金額一致を判定する許容誤差(円)。
+SHARE_AMOUNT_TOLERANCE_YEN = 1.0
+
+# 日報Excelの備考列(I列)に記載される、売上シェア入力であることの明示マーカー文字列。
+# 2026-09-15、守山8月の実データで、シェア分担側の行(「無」行)にI列「売上シェア」の
+# 記載があることを確認した(product-audit-spec.md §11)。これが存在する場合は、
+# 金額の一致・近接行等の推測より優先する一次証跡として扱う。
+SHARE_MARKER_LABEL = "売上シェア"
 
 _SEVERITY_RANK = {"正常": 0, "注意": 1, "要確認": 2, "重大エラー": 3}
 
@@ -206,6 +218,19 @@ class ProductTransaction:
     severity: str = "正常"          # 正常/注意/既知差異/要確認/重大エラー
     flags: list[str] = field(default_factory=list)  # 追加の要確認事由(複数可)
     purchaser_alias_note: str = ""  # 別名(alias)経由でスタッフ/社内購入と判定した場合の備考
+    # 売上シェア(1商品を複数スタッフで分担入力)関連(2026-09-15確定。product-audit-spec.md §11)。
+    transaction_type: str = "normal_sale"  # normal_sale/shared_sale/shared_sale_candidate
+    share_group_id: str | None = None
+    share_count: int | None = None      # グループ内の行数(確定は2、候補は3以上)
+    share_total: float | None = None    # グループ全体の合計金額(規定価格と一致する額)
+    linked_product: str | None = None   # グループが表す実際の商品名
+    linked_rows: list[int] = field(default_factory=list)  # グループを構成する全行番号
+    share_marker_raw: str | None = None  # 日報I列(備考)の生値。「売上シェア」の明示記載を保持する。
+
+
+def _has_share_marker(t: ProductTransaction) -> bool:
+    """日報I列(備考)に「売上シェア」の明示記載があるかどうかを返す。"""
+    return bool(t.share_marker_raw) and str(t.share_marker_raw).strip() == SHARE_MARKER_LABEL
 
 
 def _large_discount_flag(gross_incl_tax, discount_incl_tax) -> str | None:
@@ -267,7 +292,7 @@ def audit_transaction(
     *, date: str, row: int, customer_name, staff_col, category_label,
     product_name, quantity, gross_incl_tax, discount_incl_tax, net_incl_tax,
     tax_excl_revenue, price_history: dict, staff_price_rules: dict, staff_names: list[str],
-    staff_aliases: dict | None = None, revenue_error: bool = False,
+    staff_aliases: dict | None = None, revenue_error: bool = False, note_raw: str | None = None,
 ) -> ProductTransaction:
     purchaser_type = classify_purchaser(customer_name, staff_names, staff_aliases)
     alias_rec = resolve_purchaser_alias(customer_name, staff_aliases)
@@ -296,6 +321,7 @@ def audit_transaction(
             severity=SEVERITY_BY_CLASSIFICATION["X"],
             flags=["売上金額が数式エラーで不明"],
             purchaser_alias_note=alias_note,
+            share_marker_raw=note_raw,
         )
 
     is_unknown_label = product_name in UNKNOWN_PRODUCT_LABELS
@@ -326,6 +352,7 @@ def audit_transaction(
             severity=_escalate_severity(SEVERITY_BY_CLASSIFICATION["H"], "要確認" if flags else "正常"),
             flags=flags,
             purchaser_alias_note=alias_note,
+            share_marker_raw=note_raw,
         )
 
     rec = _find_effective_record(records, date)
@@ -350,6 +377,7 @@ def audit_transaction(
             severity=_escalate_severity(SEVERITY_BY_CLASSIFICATION["G"], "要確認" if flags else "正常"),
             flags=flags,
             purchaser_alias_note=alias_note,
+            share_marker_raw=note_raw,
         )
 
     regular_price = rec["regular_price_incl_tax"]
@@ -490,6 +518,7 @@ def audit_transaction(
         price_status=PRICE_STATUS_BY_CLASSIFICATION[classification],
         severity=severity, flags=flags,
         purchaser_alias_note=alias_note,
+        share_marker_raw=note_raw,
     )
 
 
@@ -527,3 +556,188 @@ def parse_inventory_ledger(wb) -> list[dict]:
         })
         row += 2
     return blocks
+
+
+def _apply_confirmed_share(group: list[ProductTransaction], share_total: float, linked_product: str) -> dict:
+    """売上シェア(確定済みの業務ルール)をグループに適用する(in-place)。
+
+    2名・3名いずれも、日報I列に「売上シェア」の明示記載があり、かつグループ合計金額が
+    規定価格(×数量)と一致する場合は確定した業務ルールとして扱う(2026-09-15確定。
+    I列記載が無く金額の一致のみで推測した場合は_apply_candidate_shareで候補扱いとし、
+    ここでは確定しない)。
+    「価格異常にしない・商品不明にしない・重複売上にしない」ため、classification・
+    price_status・severityを正常化する。売上(tax_excl_revenue)・購入者区分別の売上実績は
+    変更しない(各スタッフの取り分をそのまま保持)。
+    原価は「商品あり」側の1個分だけを実際の原価として扱い、「無」側は0円・原価確定済みとする
+    (原価の二重計上を避ける)。数量も「無」側は0として二重計上を避ける。
+    """
+    group_id = f"{group[0].date}-share-{min(t.sheet_row for t in group)}"
+    rows = sorted(t.sheet_row for t in group)
+    for t in group:
+        t.transaction_type = "shared_sale"
+        t.share_group_id = group_id
+        t.share_count = len(group)
+        t.share_total = share_total
+        t.linked_product = linked_product
+        t.linked_rows = rows
+        t.classification = "S"
+        t.classification_detail = (
+            f"売上シェア(確定):「{linked_product}」を{len(group)}名で分担入力(行{rows}の合計{share_total}円が"
+            "規定価格と一致)。価格異常・商品不明・重複売上のいずれとしても扱わない(product-audit-spec.md §11)。"
+        )
+        t.price_status = PRICE_STATUS_BY_CLASSIFICATION["S"]
+        t.severity = SEVERITY_BY_CLASSIFICATION["S"]
+        t.flags = []
+        if t.product_name in UNKNOWN_PRODUCT_LABELS:
+            # 「無」側: 商品は特定済み(シェア分担入力と判明)、原価・数量は二重計上しない。
+            t.product_status = "商品特定済み"
+            t.cost_excl_tax_total = 0.0
+            t.cost_confirmed = True
+            t.quantity = 0
+            # 原価0円のため、このスタッフの分担売上(税抜)がそのまま粗利益になる。
+            # 更新しないとNoneのまま残り、集計側でgetattr(...) or 0により0円と
+            # 誤集計されてしまう(2026-09-15判明・修正)。
+            t.gross_profit = round(t.tax_excl_revenue, 2)
+            t.gross_margin = 1.0 if t.tax_excl_revenue else None
+    return {
+        "share_group_id": group_id, "transaction_type": "shared_sale", "date": group[0].date,
+        "linked_product": linked_product, "share_count": len(group), "share_total": share_total,
+        "linked_rows": rows,
+    }
+
+
+def _apply_candidate_share(group: list[ProductTransaction], share_total: float, linked_product: str) -> dict:
+    """売上シェア候補(未確定)をグループに注記する(in-place)。
+
+    日報I列に「売上シェア」の明示記載が無く、金額の一致(近接行・同日等)のみから
+    推測したグループに使う(2026-09-15確定)。I列記載という一次証跡が無いまま
+    推測だけで自動確定しないため、classification・severity・原価・数量は一切
+    変更しない(要確認のまま残す)。参考情報(transaction_type・share_*)のみ付与する。
+    """
+    group_id = f"{group[0].date}-sharecandidate-{min(t.sheet_row for t in group)}"
+    rows = sorted(t.sheet_row for t in group)
+    for t in group:
+        t.transaction_type = "shared_sale_candidate"
+        t.share_group_id = group_id
+        t.share_count = len(group)
+        t.share_total = share_total
+        t.linked_product = linked_product
+        t.linked_rows = rows
+    return {
+        "share_group_id": group_id, "transaction_type": "shared_sale_candidate", "date": group[0].date,
+        "linked_product": linked_product, "share_count": len(group), "share_total": share_total,
+        "linked_rows": rows,
+    }
+
+
+def detect_and_apply_shared_sales(transactions: list[ProductTransaction]) -> list[dict]:
+    """売上シェア(1商品を複数スタッフで分担入力する運用)を検出し、対象取引に反映する(in-place)。
+
+    正式ルール(2026-09-15確定、product-audit-spec.md §11)。判定は次の優先順位で行う。
+
+    1. 日報I列(備考)に「売上シェア」の明示記載があるかを最優先の根拠として確認する
+       (SHARE_MARKER_LABEL・_has_share_marker)。明示記載は、店舗が自らその行を
+       シェア分担入力だと記録した一次証跡であり、金額の一致や近接行からの推測より
+       優先する。
+    2. 明示記載がある「無」行(1行または2行)について、商品名が記録された行(実売価格が
+       規定価格に届かない、classification=C)と、「商品あり行の金額 + 無行の金額(1〜2行) =
+       取引日時点の規定価格×数量」が一致するかを確認する。一致すれば、2名・3名いずれも
+       確定した業務ルールとして扱い、classification等を正常化する(_apply_confirmed_share)。
+       候補が複数ある(曖昧)場合は確定しない。
+    3. I列に明示記載が無い「無」行については、金額の一致(同日・近接行)のみを根拠に
+       「シェア候補」として情報を付与するのみで、classification・severity・原価・数量は
+       変更しない(推測だけでは自動確定しない。_apply_candidate_share)。
+    4. I列に明示記載があるのに対応する商品あり行を特定できなかった行(例: 商品あり行が
+       日報上に見当たらないケース)は、transaction_typeを"unknown"とし、要確認フラグを
+       追加するのみで、classification・severityは変更しない(自動正常化しない)。
+
+    戻り値は確定・候補として検出したグループのサマリ一覧(出力・ログ用)。
+    """
+    groups_summary: list[dict] = []
+    by_date: dict[str, list[ProductTransaction]] = {}
+    for t in transactions:
+        by_date.setdefault(t.date, []).append(t)
+
+    def _unique_combo(pool, deficit, used_ids):
+        """poolから、deficitに一致する組み合わせ(サイズ1→2の順)を一意に探す。
+
+        該当サイズで複数の組み合わせが見つかった(曖昧)場合は、そのサイズで探索を止め、
+        Noneを返す(より大きいサイズへは進まない。誤確定より見逃しを優先する)。
+        """
+        for size in (1, 2):
+            candidates = [u for u in pool if id(u) not in used_ids]
+            combos = [
+                c for c in itertools.combinations(candidates, size)
+                if abs(sum(u.actual_price_incl_tax for u in c) - deficit) < SHARE_AMOUNT_TOLERANCE_YEN
+            ]
+            if len(combos) == 1:
+                return combos[0]
+            if len(combos) > 1:
+                return None
+        return None
+
+    for day_txs in by_date.values():
+        # 「商品あり」候補: 通常価格不一致(C)で、規定価格に対して不足額(deficit)がある行のみ対象。
+        # K(既知差異)・D(スタッフ価格不一致)・G/F等は対象外とし、影響範囲を限定する。
+        known_candidates = []
+        for t in day_txs:
+            if t.classification != "C":
+                continue
+            if t.regular_price_incl_tax_expected is None:
+                continue
+            qty = t.quantity if t.quantity else 1
+            expected_total = t.regular_price_incl_tax_expected * qty
+            deficit = round(expected_total - t.actual_price_incl_tax, 2)
+            if deficit <= SHARE_AMOUNT_TOLERANCE_YEN:
+                continue
+            known_candidates.append((t, expected_total, deficit))
+
+        marked_pool = [
+            t for t in day_txs
+            if t.product_name in UNKNOWN_PRODUCT_LABELS and t.classification == "H" and _has_share_marker(t)
+        ]
+        unmarked_pool = [
+            t for t in day_txs
+            if t.product_name in UNKNOWN_PRODUCT_LABELS and t.classification == "H" and not _has_share_marker(t)
+        ]
+        used_ids: set[int] = set()
+
+        # パス1: I列に「売上シェア」の明示記載がある行を最優先で確定する(2名・3名とも)。
+        remaining = []
+        for t, expected_total, deficit in known_candidates:
+            combo = _unique_combo(marked_pool, deficit, used_ids)
+            if combo:
+                group = [t] + list(combo)
+                summary = _apply_confirmed_share(group, expected_total, t.product_name)
+                groups_summary.append(summary)
+                for u in combo:
+                    used_ids.add(id(u))
+            else:
+                remaining.append((t, expected_total, deficit))
+
+        # パス2: I列に明示記載が無い場合のみ、金額の一致からの「候補」判定(未確定のまま注記のみ)。
+        for t, expected_total, deficit in remaining:
+            combo = _unique_combo(unmarked_pool, deficit, used_ids)
+            if combo:
+                group = [t] + list(combo)
+                summary = _apply_candidate_share(group, expected_total, t.product_name)
+                groups_summary.append(summary)
+                for u in combo:
+                    used_ids.add(id(u))
+
+        # I列に「売上シェア」の明示記載があるのに、対応する商品あり行が特定できなかった行。
+        # 推測で正常化せず、要確認のまま残しつつ、記載があった事実だけ記録する。
+        for u in marked_pool:
+            if id(u) in used_ids:
+                continue
+            u.transaction_type = "unknown"
+            u.flags = u.flags + [
+                "日報I列に「売上シェア」の記載があるが、対応する商品あり行を特定できず、"
+                "自動では正常化しない(要確認のまま)"
+            ]
+            u.classification_detail = (
+                u.classification_detail
+                + " / I列に「売上シェア」の記載あり(対応する商品あり行が未特定のため要確認のまま)"
+            )
+
+    return groups_summary
