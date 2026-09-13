@@ -5,6 +5,10 @@ accounting/docs/product-audit-spec.md の正式ルールに基づく。
 - 価格履歴が無い場合は推測せず、G(価格履歴不足)またはH(商品不明)として扱う。
 - 異常があっても「不正」「改ざん」とは判定しない。あくまで規定価格・原価・入力内容との
   不一致として抽出し、現場確認対象とする。
+- 「価格監査」(実売価格が規定通りか)と「原価監査」(仕入原価が判明しているか)は
+  別軸として管理する。スタッフ社割価格が未登録でも、商品の原価自体が価格履歴に
+  登録されていれば、原価は確定として扱い、売上原価・粗利益の集計に含める
+  (2026-09-13確定。product-audit-spec.md §9参照)。
 """
 from __future__ import annotations
 
@@ -23,9 +27,10 @@ ROUNDING_TOLERANCE_YEN = 3.0
 # 不正・改ざんとは判定しない(現場確認対象として抽出するのみ)。
 LARGE_DISCOUNT_RATIO = 0.5
 
-# 判定区分(A〜I、および売上金額自体が数式エラーで不明なX)から、4段階の重大度への
-# 既定マッピング。個別取引でフラグ(flags)が立った場合は、この既定値より重大度を
-# 下げない方向にのみ調整する(見逃しを避けるため)。
+# 判定区分(A〜I、既知差異のK、売上金額自体が数式エラーで不明なX)から、
+# 5段階の重大度への既定マッピング。個別取引でフラグ(flags)が立った場合は、
+# この既定値より重大度を下げない方向にのみ調整する(見逃しを避けるため)。
+# 「既知差異(K)」は原因が特定済みの表示価格変動であり、要確認・重大エラーには含めない。
 SEVERITY_BY_CLASSIFICATION = {
     "A": "正常",
     "B": "注意",
@@ -36,7 +41,23 @@ SEVERITY_BY_CLASSIFICATION = {
     "G": "要確認",
     "H": "要確認",
     "I": "要確認",
+    "K": "既知差異",  # 別期間の価格履歴と一致する既知の表示価格変動(product-audit-spec.md §8)
     "X": "重大エラー",  # 物販売上(AF列)自体が数式エラーで金額不明
+}
+
+# 価格監査(A軸)の状態。原価監査(B軸)とは独立して管理する(2026-09-13確定)。
+PRICE_STATUS_BY_CLASSIFICATION = {
+    "A": "価格確定",
+    "B": "価格確定",
+    "C": "価格要確認",
+    "D": "価格要確認",
+    "E": "価格要確認",
+    "F": "価格要確認",
+    "G": "価格要確認",
+    "H": "価格要確認",
+    "I": "価格要確認",
+    "K": "既知差異",
+    "X": "価格要確認",
 }
 
 _SEVERITY_RANK = {"正常": 0, "注意": 1, "要確認": 2, "重大エラー": 3}
@@ -75,6 +96,23 @@ def load_staff_price_rules(path: Path) -> dict:
     return rules_by_product
 
 
+def load_staff_aliases(path: Path) -> dict:
+    """スタッフ・社内購入者の別名(alias)マスターを読み込む。
+
+    戻り値は正規化済みの別名(alias)をキーに、{"formal_name":..., "note":...} を
+    値に持つ辞書。表記ゆれ(ひらがな表記・オーナーの通称等)を、購入者区分の
+    判定(classify_purchaser)で吸収するために使う。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    aliases: dict[str, dict] = {}
+    for rec in doc.get("aliases", []) or []:
+        key = _normalize_name(rec["alias"])
+        if key:
+            aliases[key] = {"formal_name": rec["formal_name"], "note": rec.get("note") or ""}
+    return aliases
+
+
 def _find_effective_record(records: list[dict], date_key: str) -> dict | None:
     target = dt.date.fromisoformat(date_key)
     for rec in records:
@@ -86,17 +124,33 @@ def _find_effective_record(records: list[dict], date_key: str) -> dict | None:
     return None
 
 
-def classify_purchaser(customer_name: str | None, staff_names: list[str]) -> str:
-    """来店者区分(一般顧客/スタッフ/不明)を判定する。顧客名がスタッフ名で始まる場合を
-    自己購入とみなす(フリガナが氏名の直後に続く表記のため前方一致で判定)。"""
+def classify_purchaser(customer_name: str | None, staff_names: list[str], aliases: dict | None = None) -> str:
+    """来店者区分(一般顧客/スタッフ/不明)を判定する。
+
+    - 顧客名が空欄の場合は「不明」とする。
+    - 顧客名がスタッフ名簿(基本情報シート)の前方一致に該当する場合は「スタッフ」とする
+      (フリガナが氏名の直後に続く表記のため前方一致で判定)。
+    - 顧客名が別名(alias)マスターに一致する場合も「スタッフ」(社内購入含む)とする
+      (表記ゆれ・オーナーの通称等を吸収するため。2026-09-13確定)。
+    """
     norm = _normalize_name(customer_name)
     if not norm:
         return "不明"
+    if aliases and norm in aliases:
+        return "スタッフ"
     for staff in staff_names:
         staff_norm = _normalize_name(staff)
         if staff_norm and norm.startswith(staff_norm):
             return "スタッフ"
     return "一般顧客"
+
+
+def resolve_purchaser_alias(customer_name: str | None, aliases: dict | None) -> dict | None:
+    """顧客名が別名(alias)マスターに一致する場合、その正式氏名・備考を返す(無ければNone)。"""
+    if not aliases:
+        return None
+    norm = _normalize_name(customer_name)
+    return aliases.get(norm)
 
 
 UNKNOWN_PRODUCT_LABELS = (None, "", "無")
@@ -142,11 +196,13 @@ class ProductTransaction:
     cost_excl_tax_total: float | None
     gross_profit: float | None
     gross_margin: float | None
-    classification: str  # A〜I(またはX:売上金額自体が数式エラーで不明)
+    classification: str  # A〜I、K(既知差異)、X(売上金額が数式エラーで不明)
     classification_detail: str
-    profit_confirmed: bool
-    severity: str = "正常"          # 正常/注意/要確認/重大エラー(4段階)
+    cost_confirmed: bool   # 原価監査(B軸): 原価(仕入原価)自体が判明しているか。価格の一致とは独立。
+    price_status: str = "価格要確認"  # 価格監査(A軸): 価格確定/価格要確認/既知差異
+    severity: str = "正常"          # 正常/注意/既知差異/要確認/重大エラー
     flags: list[str] = field(default_factory=list)  # 追加の要確認事由(複数可)
+    purchaser_alias_note: str = ""  # 別名(alias)経由でスタッフ/社内購入と判定した場合の備考
 
 
 def _large_discount_flag(gross_incl_tax, discount_incl_tax) -> str | None:
@@ -181,14 +237,39 @@ def _staff_price_for_general_flag(
     return None
 
 
+def _find_known_discrepancy(records: list[dict], current_rec: dict, qty: float, gross_incl_tax: float) -> dict | None:
+    """実売価格(値引前)が、取引日時点以外の期間の通常価格履歴レコードと一致するかを確認する。
+
+    2026-09-12、守山8月のマグネシウム(ドクターセレン)監査で、日報Excelの
+    基本情報シートの商品マスターが、取得タイミングによっては後の期間の価格へ
+    既に更新されており、過去の取引行の実売価格の入力(P列)にもその新価格が
+    反映されていた事象が確認された(product-audit-spec.md §8参照)。
+    これは価格自体の異常ではなく、日報Excelの商品マスター更新に起因する
+    既知の表示価格変動であるため、通常の「C:価格不一致」等とは区別する。
+    """
+    for rec in records:
+        if rec is current_rec:
+            continue
+        other_regular = rec.get("regular_price_incl_tax")
+        if other_regular is None:
+            continue
+        if abs(gross_incl_tax - other_regular * qty) < 0.01:
+            return rec
+    return None
+
+
 def audit_transaction(
     *, date: str, row: int, customer_name, staff_col, category_label,
     product_name, quantity, gross_incl_tax, discount_incl_tax, net_incl_tax,
     tax_excl_revenue, price_history: dict, staff_price_rules: dict, staff_names: list[str],
-    revenue_error: bool = False,
+    staff_aliases: dict | None = None, revenue_error: bool = False,
 ) -> ProductTransaction:
-    purchaser_type = classify_purchaser(customer_name, staff_names)
-    qty_for_checks = quantity if quantity else 1
+    purchaser_type = classify_purchaser(customer_name, staff_names, staff_aliases)
+    alias_rec = resolve_purchaser_alias(customer_name, staff_aliases)
+    alias_note = (
+        f"別名マスターにより「{alias_rec['formal_name']}」と判定" + (f"({alias_rec['note']})" if alias_rec.get("note") else "")
+        if alias_rec else ""
+    )
 
     if revenue_error:
         # 物販売上(AF列)自体が数式エラー(#N/A等)で、金額を読み取れない場合。
@@ -205,9 +286,11 @@ def audit_transaction(
             gross_profit=None, gross_margin=None,
             classification="X",
             classification_detail="物販売上(AF列)が数式エラーのため金額不明。金額を0円と断定せず要確認とする。",
-            profit_confirmed=False,
+            cost_confirmed=False,
+            price_status=PRICE_STATUS_BY_CLASSIFICATION["X"],
             severity=SEVERITY_BY_CLASSIFICATION["X"],
             flags=["売上金額が数式エラーで不明"],
+            purchaser_alias_note=alias_note,
         )
 
     is_unknown_label = product_name in UNKNOWN_PRODUCT_LABELS
@@ -233,9 +316,11 @@ def audit_transaction(
             cost_excl_tax_unit=None, cost_excl_tax_total=None,
             gross_profit=None, gross_margin=None,
             classification="H", classification_detail=detail,
-            profit_confirmed=False,
+            cost_confirmed=False,
+            price_status=PRICE_STATUS_BY_CLASSIFICATION["H"],
             severity=_escalate_severity(SEVERITY_BY_CLASSIFICATION["H"], "要確認" if flags else "正常"),
             flags=flags,
+            purchaser_alias_note=alias_note,
         )
 
     rec = _find_effective_record(records, date)
@@ -255,9 +340,11 @@ def audit_transaction(
             gross_profit=None, gross_margin=None,
             classification="G",
             classification_detail=f"取引日({date})を含む価格履歴レコードが無い",
-            profit_confirmed=False,
+            cost_confirmed=False,
+            price_status=PRICE_STATUS_BY_CLASSIFICATION["G"],
             severity=_escalate_severity(SEVERITY_BY_CLASSIFICATION["G"], "要確認" if flags else "正常"),
             flags=flags,
+            purchaser_alias_note=alias_note,
         )
 
     regular_price = rec["regular_price_incl_tax"]
@@ -299,73 +386,89 @@ def audit_transaction(
             return diff_gross, "値引前(gross)", diff_net
         return diff_net, "値引後(net)", diff_gross
 
-    if cost_unit is None:
-        classification = "F"
-        detail = "価格履歴レコードはあるが仕入原価が未登録"
-        cost_total = None
-        profit = None
-        margin = None
-        profit_confirmed = False
-    else:
+    # 原価監査(B軸): 価格履歴レコードに仕入原価が登録されているかどうかだけで判定する。
+    # 価格(実売価格)が規定通りかどうかとは独立に扱う(2026-09-13確定。
+    # 従来はG判定(社割価格履歴不足)等の場合に原価まで一律未確定扱いにしていたが、
+    # 原価自体は判明しているため、売上原価・粗利益の集計に含めるよう改めた)。
+    cost_confirmed = cost_unit is not None
+    if cost_confirmed:
         cost_total = cost_unit * qty
         profit = round(tax_excl_revenue - cost_total, 2)
         margin = round(profit / tax_excl_revenue, 4) if tax_excl_revenue else None
+    else:
+        cost_total = None
+        profit = None
+        margin = None
 
-        if purchaser_type == "スタッフ" and staff_rule_detail == "missing":
-            classification = "G"
-            detail = "スタッフ購入だが、該当商品・取引日の社割価格履歴が無い"
-            profit_confirmed = False
-        elif purchaser_type == "スタッフ" and staff_rule_detail == "discount_percent_unrounded":
-            classification = "I"
-            detail = "割合ベースの社割価格(端数処理ルール未確定)のため現場確認が必要"
-            profit_confirmed = False
-        elif purchaser_type == "スタッフ" and expected_total_staff is not None:
-            diff, which, _ = _best_match(expected_total_staff)
-            if abs(diff) < 0.01:
-                classification, detail = "A", f"正常({which}の実売価格がスタッフ価格と一致)"
-                profit_confirmed = True
-            elif abs(diff) <= ROUNDING_TOLERANCE_YEN:
-                classification, detail = "B", f"丸め差の可能性({which}との差額{diff:+.2f}円、暫定許容範囲内)"
-                profit_confirmed = True
-            else:
-                classification, detail = "D", f"スタッフ価格と不一致({which}との差額{diff:+.2f}円)"
-                profit_confirmed = True
+    # 価格監査(A軸): 実売価格が取引日時点の規定価格と一致するか。原価の有無とは独立。
+    if not cost_confirmed:
+        classification = "F"
+        detail = "価格履歴レコードはあるが仕入原価が未登録"
+    elif purchaser_type == "スタッフ" and staff_rule_detail == "missing":
+        classification = "G"
+        detail = "スタッフ購入だが、該当商品・取引日の社割価格履歴が無い(原価は判明しているため確定売上原価には含める)"
+    elif purchaser_type == "スタッフ" and staff_rule_detail == "discount_percent_unrounded":
+        classification = "I"
+        detail = "割合ベースの社割価格(端数処理ルール未確定)のため現場確認が必要"
+    elif purchaser_type == "スタッフ" and expected_total_staff is not None:
+        diff, which, _ = _best_match(expected_total_staff)
+        if abs(diff) < 0.01:
+            classification, detail = "A", f"正常({which}の実売価格がスタッフ価格と一致)"
+        elif abs(diff) <= ROUNDING_TOLERANCE_YEN:
+            classification, detail = "B", f"丸め差の可能性({which}との差額{diff:+.2f}円、暫定許容範囲内)"
         else:
-            # 一般顧客、または購入者区分「不明」(通常価格で判定)
-            diff, which, _ = _best_match(expected_total_regular)
-            if diff is None:
-                classification, detail = "G", "通常価格が価格履歴に無い"
-                profit_confirmed = False
-            elif abs(diff) < 0.01:
-                classification, detail = "A", f"正常({which}の実売価格が通常価格と一致)"
-                profit_confirmed = True
-            elif abs(diff) <= ROUNDING_TOLERANCE_YEN:
-                classification, detail = "B", f"丸め差の可能性({which}との差額{diff:+.2f}円、暫定許容範囲内)"
-                profit_confirmed = True
-            else:
-                classification, detail = "C", f"通常価格と不一致({which}との差額{diff:+.2f}円)"
-                profit_confirmed = True
+            classification, detail = "D", f"スタッフ価格と不一致({which}との差額{diff:+.2f}円)"
+    else:
+        # 一般顧客、または購入者区分「不明」(通常価格で判定)
+        diff, which, _ = _best_match(expected_total_regular)
+        if diff is None:
+            classification, detail = "G", "通常価格が価格履歴に無い"
+        elif abs(diff) < 0.01:
+            classification, detail = "A", f"正常({which}の実売価格が通常価格と一致)"
+        elif abs(diff) <= ROUNDING_TOLERANCE_YEN:
+            classification, detail = "B", f"丸め差の可能性({which}との差額{diff:+.2f}円、暫定許容範囲内)"
+        else:
+            classification, detail = "C", f"通常価格と不一致({which}との差額{diff:+.2f}円)"
 
-    if classification in ("F", "G", "H"):
-        profit, margin, profit_confirmed = None, None, False
+    # 既知差異(K)の判定: C・D(価格不一致)になった場合のみ、取引日以外の期間の
+    # 価格履歴レコードと実売価格(値引前)が一致しないか確認する。一致すれば、
+    # 日報Excelの商品マスター更新による既知の表示価格変動として区別する
+    # (product-audit-spec.md §8・2026-09-12確定)。
+    known_flags: list[str] = []
+    if classification in ("C", "D"):
+        other_rec = _find_known_discrepancy(records, rec, qty, gross_incl_tax)
+        if other_rec is not None:
+            other_end = other_rec.get("effective_end_date") or "現在も有効"
+            classification = "K"
+            detail = (
+                f"取引日時点の価格履歴({rec['effective_start_date']}〜{rec.get('effective_end_date') or '現在'}、"
+                f"{regular_price}円)とは不一致だが、別期間の価格履歴({other_rec['effective_start_date']}〜{other_end}、"
+                f"{other_rec['regular_price_incl_tax']}円)と一致。日報Excelの商品マスターが後日更新され、"
+                "過去の表示価格が変わったことによる既知の差異(product-audit-spec.md §8参照)。"
+            )
 
-    # 追加の要確認フラグ(判定区分A〜Iとは別軸。いずれも「不正確定」ではなく現場確認対象)。
-    flags: list[str] = []
-    if cost_unit is not None and cost_unit == 0:
-        flags.append("原価0円(価格履歴上0円で登録されている)")
-    ld = _large_discount_flag(gross_incl_tax, discount_incl_tax)
-    if ld:
-        flags.append(ld)
-    staff_flag = _staff_price_for_general_flag(
-        purchaser_type=purchaser_type, product_name=product_name, date=date, qty=qty,
-        gross_incl_tax=gross_incl_tax, net_incl_tax=net_incl_tax, staff_price_rules=staff_price_rules,
-    )
-    if staff_flag:
-        flags.append(staff_flag)
-
-    severity = _escalate_severity(
-        SEVERITY_BY_CLASSIFICATION[classification], "要確認" if flags else "正常",
-    )
+    if classification == "K":
+        # 既知差異は原因特定済みのため、追加の要確認フラグ(異常値引き等)は付与せず、
+        # 重大度も固定する(要確認・重大エラーには含めない)。
+        flags: list[str] = []
+        severity = SEVERITY_BY_CLASSIFICATION["K"]
+    else:
+        # 追加の要確認フラグ(判定区分A〜Iとは別軸。いずれも「不正確定」ではなく現場確認対象)。
+        flags = []
+        if cost_unit is not None and cost_unit == 0:
+            flags.append("原価0円(価格履歴上0円で登録されている)")
+        ld = _large_discount_flag(gross_incl_tax, discount_incl_tax)
+        if ld:
+            flags.append(ld)
+        staff_flag = _staff_price_for_general_flag(
+            purchaser_type=purchaser_type, product_name=product_name, date=date, qty=qty,
+            gross_incl_tax=gross_incl_tax, net_incl_tax=net_incl_tax, staff_price_rules=staff_price_rules,
+        )
+        if staff_flag:
+            flags.append(staff_flag)
+        severity = _escalate_severity(
+            SEVERITY_BY_CLASSIFICATION[classification], "要確認" if flags else "正常",
+        )
 
     return ProductTransaction(
         date=date, sheet_row=row, customer_name=customer_name,
@@ -378,8 +481,10 @@ def audit_transaction(
         cost_excl_tax_unit=cost_unit, cost_excl_tax_total=cost_total,
         gross_profit=profit, gross_margin=margin,
         classification=classification, classification_detail=detail,
-        profit_confirmed=profit_confirmed,
+        cost_confirmed=cost_confirmed,
+        price_status=PRICE_STATUS_BY_CLASSIFICATION[classification],
         severity=severity, flags=flags,
+        purchaser_alias_note=alias_note,
     )
 
 

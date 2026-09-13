@@ -50,6 +50,10 @@ def parse_args():
         "--staff-price-rules",
         default=str(Path(__file__).resolve().parent.parent / "config" / "staff_price_rules.yaml"),
     )
+    p.add_argument(
+        "--staff-aliases",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "staff_aliases.yaml"),
+    )
     return p.parse_args()
 
 
@@ -125,10 +129,13 @@ def main():
 
     price_history_path = Path(args.price_history)
     staff_rules_path = Path(args.staff_price_rules)
+    staff_aliases_path = Path(args.staff_aliases)
     price_history = product_audit.load_price_history(price_history_path)
     staff_price_rules = product_audit.load_staff_price_rules(staff_rules_path)
+    staff_aliases = product_audit.load_staff_aliases(staff_aliases_path) if staff_aliases_path.exists() else {}
     logger.info(f"価格履歴マスター読み込み: {len(price_history)}商品 ({price_history_path})")
     logger.info(f"スタッフ価格履歴マスター読み込み: {len(staff_price_rules)}商品 ({staff_rules_path})")
+    logger.info(f"スタッフ・社内購入者の別名マスター読み込み: {len(staff_aliases)}件 ({staff_aliases_path})")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -154,7 +161,7 @@ def main():
                 gross_incl_tax=r["gross_incl_tax"], discount_incl_tax=r["discount_incl_tax"],
                 net_incl_tax=r["net_incl_tax"], tax_excl_revenue=r["tax_excl_revenue"],
                 price_history=price_history, staff_price_rules=staff_price_rules,
-                staff_names=staff_names, revenue_error=r["revenue_error"],
+                staff_names=staff_names, staff_aliases=staff_aliases, revenue_error=r["revenue_error"],
             )
             day_txs.append(tx)
         all_transactions.extend(day_txs)
@@ -208,16 +215,27 @@ def main():
         classification_counts[tx.classification] = classification_counts.get(tx.classification, 0) + 1
     logger.info(f"判定件数: {classification_counts}")
 
-    severity_counts = {"正常": 0, "注意": 0, "要確認": 0, "重大エラー": 0}
+    severity_counts = {"正常": 0, "既知差異": 0, "注意": 0, "要確認": 0, "重大エラー": 0}
     for tx in all_transactions:
         severity_counts[tx.severity] = severity_counts.get(tx.severity, 0) + 1
     logger.info(f"重大度件数: {severity_counts}")
 
+    # 価格監査(A軸)の状態別件数: 価格確定/価格要確認/既知差異。原価監査(B軸)とは独立に集計する
+    # (2026-09-13確定。product-audit-spec.md §9参照)。
+    price_status_counts = {"価格確定": 0, "価格要確認": 0, "既知差異": 0}
+    for tx in all_transactions:
+        price_status_counts[tx.price_status] = price_status_counts.get(tx.price_status, 0) + 1
+    logger.info(f"価格監査 状態別件数: {price_status_counts}")
+
     def sum_attr(txs, attr):
         return round(sum(getattr(t, attr) or 0 for t in txs), 2)
 
-    profit_confirmed_txs = [t for t in all_transactions if t.profit_confirmed]
-    profit_unconfirmed_txs = [t for t in all_transactions if not t.profit_confirmed]
+    # 原価監査(B軸): 原価(仕入原価)自体が価格履歴に登録されているかどうかだけで判定する。
+    # スタッフ社割価格が未登録(G判定)でも、原価が判明していれば原価確定として扱う
+    # (2026-09-13確定。以前はprofit_confirmedとして価格の一致状況と一体で扱っていたため、
+    # 在庫帳ベースの原価合計と食い違いが生じていた)。
+    cost_confirmed_txs = [t for t in all_transactions if t.cost_confirmed]
+    cost_unconfirmed_txs = [t for t in all_transactions if not t.cost_confirmed]
 
     # 調査2: 全取引を「一般顧客/スタッフ/購入者区分不明/商品不明/その他」の5分類に
     # 排他的に振り分け、5分類の合計売上が物販総売上と一致することを検証する。
@@ -310,6 +328,7 @@ def main():
         "transaction_count": len(all_transactions),
         "classification_counts": classification_counts,
         "severity_counts": severity_counts,
+        "price_status_counts": price_status_counts,
         "inventory_reconciliation": {
             "product_blocks_checked": len(inventory_blocks),
             "mismatch_count": len(inventory_reconciliation_rows),
@@ -325,19 +344,19 @@ def main():
             "bucket_sum_check_diff": bucket_check_diff,
         },
         "cost_excl_tax": {
-            "total_confirmed": sum_attr(profit_confirmed_txs, "cost_excl_tax_total"),
+            "total_confirmed": sum_attr(cost_confirmed_txs, "cost_excl_tax_total"),
         },
         "gross_profit": {
-            "total_confirmed": sum_attr(profit_confirmed_txs, "gross_profit"),
+            "total_confirmed": sum_attr(cost_confirmed_txs, "gross_profit"),
         },
         "gross_margin_confirmed": (
-            round(sum_attr(profit_confirmed_txs, "gross_profit") / sum_attr(profit_confirmed_txs, "tax_excl_revenue"), 4)
-            if sum_attr(profit_confirmed_txs, "tax_excl_revenue") else None
+            round(sum_attr(cost_confirmed_txs, "gross_profit") / sum_attr(cost_confirmed_txs, "tax_excl_revenue"), 4)
+            if sum_attr(cost_confirmed_txs, "tax_excl_revenue") else None
         ),
-        "profit_confirmed_transaction_count": len(profit_confirmed_txs),
-        "profit_unconfirmed_transaction_count": len(profit_unconfirmed_txs),
-        "revenue_excl_tax_profit_confirmed": sum_attr(profit_confirmed_txs, "tax_excl_revenue"),
-        "revenue_excl_tax_profit_unconfirmed": sum_attr(profit_unconfirmed_txs, "tax_excl_revenue"),
+        "cost_confirmed_transaction_count": len(cost_confirmed_txs),
+        "cost_unconfirmed_transaction_count": len(cost_unconfirmed_txs),
+        "revenue_excl_tax_cost_confirmed": sum_attr(cost_confirmed_txs, "tax_excl_revenue"),
+        "revenue_excl_tax_cost_unconfirmed": sum_attr(cost_unconfirmed_txs, "tax_excl_revenue"),
     }
 
     out_dir = io_utils.OUTPUT_DIR / "product_audit" / year_month
@@ -363,9 +382,11 @@ def main():
             "gross_margin": t.gross_margin,
             "classification": t.classification,
             "classification_detail": t.classification_detail,
-            "profit_confirmed": t.profit_confirmed,
+            "price_status": t.price_status,
+            "cost_confirmed": t.cost_confirmed,
             "severity": t.severity,
             "flags": "・".join(t.flags) if t.flags else "",
+            "purchaser_alias_note": t.purchaser_alias_note,
         })
     detail_path = out_dir / f"{store_id}_product_audit_detail.csv"
     io_utils.write_csv(
@@ -374,33 +395,43 @@ def main():
                     "quantity", "regular_price_incl_tax_expected", "staff_price_incl_tax_expected",
                     "actual_price_incl_tax", "discount_incl_tax", "tax_excl_revenue",
                     "cost_excl_tax_total", "gross_profit", "gross_margin",
-                    "classification", "classification_detail", "profit_confirmed",
-                    "severity", "flags"],
+                    "classification", "classification_detail", "price_status", "cost_confirmed",
+                    "severity", "flags", "purchaser_alias_note"],
     )
     logger.info(f"取引明細を出力: {detail_path}")
 
-    # 要確認一覧(P項目): 重大度が「正常」以外(注意/要確認/重大エラー)の取引をすべて含める。
+    # 既知差異一覧: 原因特定済みの表示価格変動(K判定)。要確認一覧には含めない
+    # (2026-09-13確定。product-audit-spec.md §8参照)。
+    known_discrepancy_rows = [r for r in detail_rows if r["severity"] == "既知差異"]
+    known_discrepancy_path = out_dir / f"{store_id}_product_audit_known_discrepancies.csv"
+    io_utils.write_csv(known_discrepancy_path, known_discrepancy_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
+    logger.info(f"既知差異一覧を出力: {known_discrepancy_path}({len(known_discrepancy_rows)}件)")
+
+    # 要確認一覧(P項目): 重大度が「注意/要確認/重大エラー」の取引を含める。
+    # 「既知差異」は原因特定済みのため、要確認一覧からは明示的に除外する。
     # 判定区分がA(正常)であっても、追加フラグ(異常値引き・社割価格流用の可能性等)により
     # 重大度が引き上げられている取引を取りこぼさないため、classificationではなくseverityで判定する。
-    error_rows = [r for r in detail_rows if r["severity"] != "正常"]
+    error_rows = [r for r in detail_rows if r["severity"] not in ("正常", "既知差異")]
     error_path = out_dir / f"{store_id}_product_audit_errors.csv"
     io_utils.write_csv(error_path, error_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
-    logger.info(f"要確認一覧(正常以外)を出力: {error_path}({len(error_rows)}件)")
+    logger.info(f"要確認一覧(正常・既知差異を除く)を出力: {error_path}({len(error_rows)}件)")
 
-    unconfirmed_rows = [r for r in detail_rows if not r["profit_confirmed"]]
-    unconfirmed_path = out_dir / f"{store_id}_product_audit_profit_unconfirmed.csv"
+    unconfirmed_rows = [r for r in detail_rows if not r["cost_confirmed"]]
+    unconfirmed_path = out_dir / f"{store_id}_product_audit_cost_unconfirmed.csv"
     io_utils.write_csv(unconfirmed_path, unconfirmed_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
-    logger.info(f"利益未確定取引一覧を出力: {unconfirmed_path}({len(unconfirmed_rows)}件)")
+    logger.info(f"原価未確定取引一覧を出力: {unconfirmed_path}({len(unconfirmed_rows)}件)")
 
     for cls in sorted(classification_counts):
-        if cls != "A":
+        if cls == "K":
+            logger.info(f"判定{cls}(既知差異): {classification_counts[cls]}件")
+        elif cls != "A":
             logger.warning(f"判定{cls}: {classification_counts[cls]}件")
 
     ledger_info = io_utils.update_ledger(
         store_id=f"{store_id}_product_audit", year_month=year_month,
         source_file_sha256=source_hash, source_file_path=str(source_path),
         output_paths=[str(summary_path), str(detail_path), str(error_path), str(unconfirmed_path),
-                      str(day_reconciliation_path), str(inventory_recon_path)],
+                      str(known_discrepancy_path), str(day_reconciliation_path), str(inventory_recon_path)],
     )
     if ledger_info["is_rerun_same_source"]:
         logger.info("同一ソースファイルでの再実行です。出力は上書きされ、二重計上は発生していません。")
