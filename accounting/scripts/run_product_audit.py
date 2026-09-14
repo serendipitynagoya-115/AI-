@@ -346,6 +346,40 @@ def main():
             f"(差={total_diff})。区分振替はカテゴリの訂正のみで、入金額の総額は変わりません。"
         )
 
+    # 店舗全体売上・物販売上・施術/既存売上を明確に区別して報告する(2026-09-15確定。
+    # product-audit-spec.md §17参照)。「物販売上」の金額を「店舗全体売上」と誤読しないため、
+    # 月報集計シート自身が持つ実売合計(店舗全体)・内回数券等(施術・回数券)・内物販の
+    # 内訳を読み取り、区分振替(§14)を反映した最終値も併せて出力する。
+    monthly_summary = product_audit.parse_monthly_summary(wb)
+    store_total_actual_sales = monthly_summary["store_total_actual_sales"]
+    retail_sales_reported = monthly_summary["retail_sales_reported"]
+    ticket_treatment_sales_reported = monthly_summary["ticket_treatment_sales_reported"]
+    retail_sales_after_reclassification = round(total_engine, 2)
+    ticket_treatment_sales_after_reclassification = (
+        round(ticket_treatment_sales_reported + total_reclassified_all, 2)
+        if ticket_treatment_sales_reported is not None else None
+    )
+    if store_total_actual_sales is not None:
+        store_total_check_diff = round(
+            retail_sales_after_reclassification
+            + (ticket_treatment_sales_after_reclassification or 0)
+            - store_total_actual_sales,
+            2,
+        )
+        logger.info(
+            f"店舗全体売上={store_total_actual_sales}円(月報集計シート実売実績累計・変更なし) / "
+            f"物販売上(区分振替後)={retail_sales_after_reclassification}円 / "
+            f"施術・既存売上(区分振替後)={ticket_treatment_sales_after_reclassification}円 "
+            f"(差={store_total_check_diff})"
+        )
+        if abs(store_total_check_diff) >= 1.0:
+            logger.error(
+                "店舗全体売上と、物販売上+施術・既存売上の合計が一致しません。"
+                "区分振替の反映漏れの可能性があるため要確認です。"
+            )
+    else:
+        logger.error("月報集計シートから店舗全体の実売実績を読み取れませんでした(要確認)。")
+
     # --- 集計 ---
     classification_counts = {}
     for tx in all_transactions:
@@ -510,7 +544,23 @@ def main():
             "reclassified_total": total_reclassified_all,
             "diff": total_diff, "matches": abs(total_diff) < 1.0,
         },
+        # 店舗全体売上・物販売上・施術/既存売上を明確に区別するための内訳(§17)。
+        # 「revenue_excl_tax.total」はあくまで物販売上であり、店舗全体売上ではないことに注意。
+        "store_overall_revenue": {
+            "store_total_actual_sales": store_total_actual_sales,
+            "retail_sales_reported_before_reclassification": retail_sales_reported,
+            "ticket_treatment_sales_reported_before_reclassification": ticket_treatment_sales_reported,
+            "retail_sales_after_reclassification": retail_sales_after_reclassification,
+            "ticket_treatment_sales_after_reclassification": ticket_treatment_sales_after_reclassification,
+            "note": (
+                "store_total_actual_sales(月報集計シート実売実績累計)は区分振替の影響を受けない"
+                "店舗全体の実売合計。retail_sales_after_reclassification + "
+                "ticket_treatment_sales_after_reclassification が store_total_actual_sales と"
+                "一致することを確認する。"
+            ),
+        },
         "revenue_excl_tax": {
+            # この値は「物販売上」であり、店舗全体売上ではない(store_overall_revenue参照)。
             "total": total_revenue,
             "by_purchaser_type": {**purchaser_revenue, "check_diff": purchaser_check_diff},
             "by_product_status": {**product_status_revenue, "check_diff": product_status_check_diff},

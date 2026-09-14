@@ -136,8 +136,13 @@ staff_price_rules:
     explicit_staff_price_incl_tax: 821
     discount_percent: null
     rounding_rule: null
+    confirmed_rounding_tolerance_yen: 1
     source: "社割価格表(26.5)〜.pdf"
-    notes: ""
+    notes: >
+      通常価格1,026円×20%OFF=820.8円。値引額を丸める(206円引き→820円)か、
+      最終価格を丸める(→821円)かで1円差が生じる。2026-09-15、守山8月8/27の
+      実取引(値引後820円)を、正式な社割価格821円との円未満端数処理の違いと
+      オーナーが確認・確定(product-audit-spec.md §16)。
 
   - product_name: "インカ"
     effective_start_date: "2026-08-01"

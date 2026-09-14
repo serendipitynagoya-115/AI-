@@ -544,8 +544,20 @@ def audit_transaction(
         detail = "割合ベースの社割価格(端数処理ルール未確定)のため現場確認が必要"
     elif purchaser_type == "スタッフ" and expected_total_staff is not None:
         diff, which, _ = _best_match(expected_total_staff)
+        confirmed_rounding_yen = staff_rec.get("confirmed_rounding_tolerance_yen") if staff_rec else None
         if abs(diff) < 0.01:
             classification, detail = "A", f"正常({which}の実売価格がスタッフ価格と一致)"
+        elif confirmed_rounding_yen is not None and abs(diff) <= confirmed_rounding_yen:
+            # 税込価格×割引率(社割)の計算結果が小数になる商品について、「値引額を丸める」
+            # 「最終価格を丸める」のどちらで丸めるかにより、正式なスタッフ価格(登録済みの
+            # explicit_staff_price_incl_tax)との間に生じる円単位の差。オーナーが商品ごとに
+            # 確認・確定した場合のみ、staff_price_rules.yamlのconfirmed_rounding_tolerance_yen
+            # に登録し、価格異常(B・D)として検出しない(2026-09-15確定。推測では適用しない)。
+            classification, detail = "A", (
+                f"正常(登録済み社割価格{expected_total_staff}円との差額{diff:+.2f}円は、"
+                "税込価格×割引率の円未満端数処理の違いによる確定済みの丸め差。"
+                "正式な社割価格を優先して使用。product-audit-spec.md §16参照)"
+            )
         elif abs(diff) <= ROUNDING_TOLERANCE_YEN:
             classification, detail = "B", f"丸め差の可能性({which}との差額{diff:+.2f}円、暫定許容範囲内)"
         else:
@@ -658,6 +670,43 @@ def parse_inventory_ledger(wb) -> list[dict]:
         })
         row += 2
     return blocks
+
+
+def parse_monthly_summary(wb) -> dict:
+    """月報集計シートから、店舗全体の実売・内訳(回数券等・物販)の当月累計を読み取る
+    (読み取り専用、外部参照を経由しない自己完結型の値。product-audit-spec.md §17参照)。
+
+    「772,881.85円」等の物販監査上の金額を、誤って「店舗全体売上」と読み違えないよう、
+    店舗全体の実売合計(店舗全体売上)・内回数券等(施術・回数券)・内物販の3つを
+    明確に区別して返す。ラベル(B列)を検索して該当行を特定し、ヘッダー行で
+    「累計」列を探すことで、行位置の変更にある程度頑健にする。値が見つからない
+    場合はNoneのまま返し、推測で埋めない。
+    """
+    ws = wb["月報集計"]
+    total_col = None
+    for row in range(1, 10):
+        for col in range(1, ws.max_column + 1):
+            if ws.cell(row=row, column=col).value == "累計":
+                total_col = col
+                break
+        if total_col:
+            break
+
+    labels = {
+        "store_total_actual_sales": "実売（実績）",
+        "ticket_treatment_sales_reported": "内回数券等",
+        "retail_sales_reported": "内物販",
+    }
+    result: dict = {k: None for k in labels}
+    if total_col is None:
+        return result
+    for row in range(1, ws.max_row + 1):
+        label = ws.cell(row=row, column=2).value
+        for key, target_label in labels.items():
+            if label == target_label:
+                v = ws.cell(row=row, column=total_col).value
+                result[key] = v if isinstance(v, (int, float)) else None
+    return result
 
 
 def _apply_confirmed_share(group: list[ProductTransaction], share_total: float, linked_product: str) -> dict:
