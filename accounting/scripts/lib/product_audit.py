@@ -237,6 +237,14 @@ def apply_confirmed_status_overrides(
     ファイル内に見当たらず自動検出できないケース。product-audit-spec.md §19)。
     指定が無ければ従来通りseverityのみを変更する(classification・原価判定は変更しない)。
     `clear_flags: true`が指定されていれば、追加の要確認フラグ(flags)もクリアする。
+
+    `mark_cost_unconfirmed: true`が指定されていれば、原価監査(B軸)をcost_confirmed=False
+    へ上書きする(2026-09-16確定、product-audit-spec.md §26参照)。商品マスターに
+    cost_price_excl_tax=0が登録されているだけで、実際の原価がまだ特定できていない
+    非定番商品(§24のvariable_price_non_standardと同種だが、店舗×月固有のconfirmed設定
+    としてオーナー確認した個別取引に使う)について、売上確定と原価確定が独立である
+    という原則(§25)を守るため、原価0円を確定原価として扱わないようにする。
+    売上(tax_excl_revenue)は変更しない。
     """
     applied = 0
     for t in transactions:
@@ -253,6 +261,12 @@ def apply_confirmed_status_overrides(
             t.transaction_type = rec["new_transaction_type"]
         if rec.get("clear_flags"):
             t.flags = []
+        if rec.get("mark_cost_unconfirmed"):
+            t.cost_confirmed = False
+            t.cost_excl_tax_unit = None
+            t.cost_excl_tax_total = None
+            t.gross_profit = None
+            t.gross_margin = None
         t.classification_detail = t.classification_detail + " / " + rec["note"].strip()
         applied += 1
     return applied

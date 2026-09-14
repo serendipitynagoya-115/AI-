@@ -741,3 +741,39 @@ discrepancies:
 推測で一致させず、オーナー確認済みの登録だけを既知構造差異として扱うこと。**差異そのものを消したり、月報集計と日報を無理に一致させたりしない。** 日報実績・月報集計・差額・原因は、既知構造差異として区分した後もすべてそのまま保持する。
 
 2026-09-16、みよし店8月を`confirmed_structural_discrepancies.yaml`登録後に再監査し、商品監査要確認0件・店舗全体要確認0件・既知構造差異1件(6,119.44円)に分離されることを確認した。守山店・緑店・刈谷店には該当する登録が無いため、既知構造差異は0件のまま変化しない。売上・原価・粗利益はいずれの店舗も変化しない。
+
+## 27. store×year_month固有confirmed設定による原価未確認への上書き(`mark_cost_unconfirmed`、2026-09-16確定)
+
+### 背景
+
+§24の`variable_price_non_standard`は、`config/global/product_price_history.yaml`の商品マスターレコードに明示登録する、**商品名単位**(全店舗共通)のフラグである。日進赤池店8/3行4「その他店販（標準税率）」は、オーナー確認により非定番のグラント商品(在庫帳カテゴリ「グラント」・商品番号56)として実際に販売した正しい売上と判明したが、他店舗でも同じ「その他店販（標準税率）」という商品名が同じ運用に該当するかは未確認だった。このため、商品マスターの`variable_price_non_standard`フラグ(全店舗へ波及)ではなく、**店舗×月固有の個別取引**として`confirmed_status_overrides.yaml`(§15)に登録する方法を用いる。
+
+### 仕組み
+
+`apply_confirmed_status_overrides`(`product_audit.py`)に、`mark_cost_unconfirmed: true`を指定できるようにした。この場合、該当取引の原価監査(B軸)を`cost_confirmed=False`へ上書きし、`cost_excl_tax_unit`・`cost_excl_tax_total`・`gross_profit`・`gross_margin`をすべて`None`にする。**売上(`tax_excl_revenue`)は変更しない。** `new_classification: V`と組み合わせることで、§24のvariable_price_non_standardと同じ「価格可変・非定番商品」の扱い(価格異常判定を行わず、実績売上はそのまま計上し、原価だけ未確認とする)を、店舗×月固有の個別取引に対して適用できる。
+
+日進赤池店8/3行4の登録例:
+
+```yaml
+overrides:
+  - store_id: nisshin_akaike
+    year_month: "2026-08"
+    date: "2026-08-03"
+    row: 4
+    new_classification: V
+    new_severity: 注意
+    new_price_status: 価格確定
+    clear_flags: true
+    mark_cost_unconfirmed: true
+    note: >
+      (確認内容の説明)
+```
+
+2026-09-16の確認結果: この登録により、当該取引の価格異常(classification=C)は解消され(classification=V)、原価0円(商品マスター登録値)は確定原価として扱われなくなった(`cost_confirmed=False`、`unconfirmed_cogs_sales`に32,000円が計上)。実績物販売上(165,188.89円)は変化せず、店舗全体の物販粗利益・粗利率(`gross_profit.management_accounting`・`gross_margin.management_accounting`)は`null`(未確定)になった(§25参照)。
+
+### 日進赤池店8月での確定事実(2026-09-16オーナー確認)
+
+- `confirmed_status_overrides.yaml`:8/3行4「その他店販（標準税率）」(上記)。
+- `confirmed_purchaser_blocks.yaml`(§12):8/29行11(MVM、購入者「浅井咲也子」、直前行10の本人施術に連続)・8/29行13(リセットフローラ、購入者「竹内季子」、直前行12の本人施術に連続)。それぞれ単独行(start_row=end_row)のブロックとして登録し、空欄行を無条件に前行の購入者へ引き継ぐ一般ルールにはしていない。
+
+8/20(未説明残差+9,784円)・8/25(-9,130円)・8/27(-10,000円)の支払差異、および在庫マイナス(§25参照の在庫帳観察結果)は、いずれも2026-09-16時点でオーナー確認が取れておらず、confirmed設定へは登録していない。店舗全体要確認3件として引き続き保持する。
