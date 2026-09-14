@@ -235,6 +235,7 @@ def main():
     all_transactions: list[product_audit.ProductTransaction] = []
     all_reclassified_rows: list[dict] = []
     day_reconciliation_rows = []
+    payment_reconciliation_rows = []
     for day in xlsx_report.DAY_SHEETS:
         if day not in wb.sheetnames:
             continue
@@ -313,6 +314,51 @@ def main():
                     f"  行{r['row']}: 商品={r['product']!r} 顧客={r['customer_name']!r} "
                     f"AF(税抜)={r['tax_excl_revenue']} P(税込)={r['gross_incl_tax']}"
                 )
+
+        # 調査: 支払金額(現金+カード+PayPay)と売上金額(累計税込)の日別突合
+        # (2026-09-16確定)。物販固有ではなく店舗全体の照合のため、商品監査の
+        # 要確認(severity)とは別軸の「店舗全体要確認」として集計する
+        # (product-audit-spec.md §25参照)。
+        #
+        # 既知差異(K判定・§8)のマグネシウム等が含まれる日は、日報の表示価格(X列・AB列)
+        # が後日のマスター更新で汚染されている一方、Y/Z/AA列(現金・カード・PayPay)には
+        # 取引時点に実際に収受した真の金額が記録されているため、単純な合計比較では
+        # 機械的に差が生じる(2026-09-16、守山・みよし両店の全不一致日で確認)。
+        # この汚染額をスタッフ社割・値引ありの取引まで含めて正確に打ち消す計算は
+        # 複雑になるため(値引前後どちらの金額と一致したかが取引ごとに異なる)、
+        # 誤った補正で新たな見落としを生まないよう、既知差異(K)を含む日は自動判定の
+        # 対象から外し、診断用データとして記録するにとどめる(INFO、要確認に含めない)。
+        # 既知差異を含まない日の不一致だけを、原因未特定の店舗全体要確認として扱う。
+        day_has_known_discrepancy = any(t.classification == "K" for t in day_txs)
+
+        def _num_or_none(v):
+            return None if isinstance(v, str) else v
+
+        cash = _num_or_none(ws["Y54"].value) or 0
+        card = _num_or_none(ws["Z54"].value) or 0
+        paypay = _num_or_none(ws["AA54"].value) or 0
+        revenue_incl_tax = _num_or_none(ws["AB54"].value)
+        if revenue_incl_tax is not None:
+            pay_diff = round(cash + card + paypay - revenue_incl_tax, 2)
+            if abs(pay_diff) >= 1.0:
+                payment_reconciliation_rows.append({
+                    "day": day, "cash": cash, "card": card, "paypay": paypay,
+                    "revenue_incl_tax": revenue_incl_tax, "diff": pay_diff,
+                    "contains_known_discrepancy": day_has_known_discrepancy,
+                    "counted_as_pending_review": not day_has_known_discrepancy,
+                })
+                if day_has_known_discrepancy:
+                    logger.info(
+                        f"[{day}日] 支払金額と売上金額に差({pay_diff}円)があるが、既知差異(K判定)"
+                        "の取引を含む日のため、価格履歴汚染による説明可能な差の可能性が高く、"
+                        "自動では店舗全体要確認に計上しない(診断データとして記録)。"
+                    )
+                else:
+                    logger.error(
+                        f"[{day}日] 支払金額と売上金額の不一致を検出: 現金={cash} カード={card} "
+                        f"PayPay={paypay} (合計{round(cash + card + paypay, 2)}) / "
+                        f"売上(税込累計)={revenue_incl_tax} (差={pay_diff})。店舗全体要確認。"
+                    )
 
     logger.info(f"物販取引を{len(all_transactions)}件抽出しました。")
     if all_reclassified_rows:
@@ -454,7 +500,35 @@ def main():
                 "区分振替の反映漏れの可能性があるため要確認です。"
             )
     else:
+        store_total_check_diff = None
         logger.error("月報集計シートから店舗全体の実売実績を読み取れませんでした(要確認)。")
+
+    # 店舗全体要確認(store_wide_pending_review): 個々の物販取引(商品監査)には
+    # 紐づかない、店舗全体レベルの照合エラーをまとめて集計する(2026-09-16確定。
+    # product-audit-spec.md §25参照)。「商品監査要確認」(severity_counts["要確認"])
+    # とは別軸であり、どちらか一方が0件でも、もう一方が残っていれば
+    # 店舗監査全体を「完全解決」とは扱わない。
+    store_wide_issues = []
+    if store_total_actual_sales is None:
+        store_wide_issues.append({
+            "type": "store_total_actual_sales_unreadable",
+            "detail": "月報集計シートから店舗全体の実売実績を読み取れなかった",
+        })
+    elif abs(store_total_check_diff) >= 1.0:
+        store_wide_issues.append({
+            "type": "store_total_actual_sales_mismatch",
+            "diff": store_total_check_diff,
+            "detail": "店舗全体売上と、物販売上+施術・既存売上の合計が一致しない",
+        })
+    for r in payment_reconciliation_rows:
+        if not r["counted_as_pending_review"]:
+            continue
+        store_wide_issues.append({
+            "type": "payment_vs_revenue_mismatch",
+            "day": r["day"], "diff": r["diff"],
+            "detail": "支払金額(現金+カード+PayPay)と売上金額(税込累計)が一致しない",
+        })
+    store_wide_pending_review_count = len(store_wide_issues)
 
     # --- 集計 ---
     classification_counts = {}
@@ -483,6 +557,17 @@ def main():
     # 在庫帳ベースの原価合計と食い違いが生じていた)。
     cost_confirmed_txs = [t for t in all_transactions if t.cost_confirmed]
     cost_unconfirmed_txs = [t for t in all_transactions if not t.cost_confirmed]
+
+    # 売上確定・原価確定・粗利益確定は独立した3軸であり、原価未確認の売上が1件でも
+    # 存在する場合、店舗全体の粗利益・粗利率は確定値として扱わない(2026-09-16確定。
+    # product-audit-spec.md §25参照)。原価未確認の売上をcost=0として正式粗利益へ
+    # 混ぜないよう、confirmed_cogs(確認済み原価)とunconfirmed_cogs_sales(原価未確認の
+    # 売上額)を明示的に分離して保持する。
+    cogs_fully_confirmed = len(cost_unconfirmed_txs) == 0
+    confirmed_cogs = sum_attr(cost_confirmed_txs, "cost_excl_tax_total")
+    confirmed_product_sales = sum_attr(cost_confirmed_txs, "tax_excl_revenue")
+    confirmed_product_gross_profit = sum_attr(cost_confirmed_txs, "gross_profit")
+    unconfirmed_cogs_sales = sum_attr(cost_unconfirmed_txs, "tax_excl_revenue")
 
     # 価格可変・非定番商品(V判定。セット料金等。product-audit-spec.md §24参照)。
     variable_price_txs = [t for t in all_transactions if t.classification == "V"]
@@ -521,6 +606,10 @@ def main():
         f"売上シェア未解決={audit_status_counts['unresolved_shared_sale']}件 / "
         f"原価未確認={audit_status_counts['cost_unconfirmed']}件 / "
         f"その他要確認={audit_status_counts['other_pending_review']}件"
+    )
+    logger.info(
+        f"要確認件数(分離): 商品監査要確認={severity_counts['要確認']}件 / "
+        f"店舗全体要確認={store_wide_pending_review_count}件"
     )
 
     # 調査2: 「購入者区分」(スタッフ/社内購入/一般顧客/購入者不明)と「商品特定状態」
@@ -627,6 +716,14 @@ def main():
         f"(不整合{len(inventory_reconciliation_rows)}件/商品ブロック{len(inventory_blocks)}件中)"
     )
 
+    payment_reconciliation_path = reconciliation_out_dir / f"{store_id}_payment_reconciliation.csv"
+    io_utils.write_csv(
+        payment_reconciliation_path, payment_reconciliation_rows,
+        fieldnames=["day", "cash", "card", "paypay", "revenue_incl_tax", "diff",
+                    "contains_known_discrepancy", "counted_as_pending_review"],
+    )
+    logger.info(f"支払金額と売上金額の日別突合を出力: {payment_reconciliation_path}({len(payment_reconciliation_rows)}件)")
+
     summary = {
         "store_id": store_id, "year_month": year_month,
         "source_file": str(source_path), "source_file_sha256": source_hash,
@@ -639,6 +736,35 @@ def main():
             "product_blocks_checked": len(inventory_blocks),
             "mismatch_count": len(inventory_reconciliation_rows),
             "output_csv": str(inventory_recon_path),
+        },
+        "payment_reconciliation": {
+            # 支払金額(現金+カード+PayPay)と売上金額(税込累計)の日別突合。物販固有では
+            # なく店舗全体の照合(2026-09-16確定。product-audit-spec.md §25参照)。
+            # 既知差異(K判定)を含む日は、価格履歴汚染により機械的に差が生じるため
+            # pending_review(店舗全体要確認)には計上せず、診断データ(diagnostic_only)
+            # として別掲する(counted_as_pending_review=falseの行。要因未特定ではないため)。
+            "day_mismatch_count_total": len(payment_reconciliation_rows),
+            "day_mismatch_count_pending_review": sum(
+                1 for r in payment_reconciliation_rows if r["counted_as_pending_review"]
+            ),
+            "day_mismatch_count_diagnostic_only_known_discrepancy": sum(
+                1 for r in payment_reconciliation_rows if not r["counted_as_pending_review"]
+            ),
+            "total_diff_pending_review": round(sum(
+                r["diff"] for r in payment_reconciliation_rows if r["counted_as_pending_review"]
+            ), 2),
+            "matches": all(not r["counted_as_pending_review"] for r in payment_reconciliation_rows),
+            "output_csv": str(payment_reconciliation_path),
+        },
+        # 「商品監査要確認」(個々の物販取引に紐づくseverity="要確認")と「店舗全体要確認」
+        # (店舗全体売上照合・支払金額照合等、個々の取引に紐づかない照合エラー)を明示的に
+        # 分離する(2026-09-16確定。product-audit-spec.md §25参照)。どちらか一方が0件でも、
+        # もう一方が残っていれば店舗監査全体を「完全解決」とは扱わない。
+        "pending_review_summary": {
+            "product_audit_pending_review_count": severity_counts["要確認"],
+            "store_wide_pending_review_count": store_wide_pending_review_count,
+            "store_wide_issues": store_wide_issues,
+            "fully_resolved": severity_counts["要確認"] == 0 and store_wide_pending_review_count == 0,
         },
         "shared_sales": {
             "confirmed_group_count": len(confirmed_share_groups),
@@ -695,29 +821,57 @@ def main():
             "by_product_status": {**product_status_revenue, "check_diff": product_status_check_diff},
         },
         "cost_excl_tax": {
-            # 実績原価。在庫帳当月販売金額・日別数量×原価・在庫増減式の3方式が一致することを
-            # 確認済み(product-audit-spec.md §9)。管理会計上の売上原価として使用する。
-            "actual_total": sum_attr(cost_confirmed_txs, "cost_excl_tax_total"),
+            # 確認済み原価の合計。原価が全件確認済みの店舗では「物販全体の確定原価」と
+            # 一致するが、原価未確認の売上がある店舗では「現時点で確認できている原価」に
+            # すぎず、「物販全体の確定原価」ではない(2026-09-16確定。product-audit-spec.md
+            # §25参照)。cogs_fully_confirmedがFalseの場合は必ずconfirmed_cogsと
+            # 併記し、単独で「原価」として扱わないこと。
+            "actual_total": confirmed_cogs,
         },
         "gross_profit": {
-            # 管理会計上の物販粗利益: 物販売上総額 - 実績売上原価。価格監査・商品特定の
-            # 未確定があっても、売上自体を管理会計の集計から除外しない(2026-09-14確定)。
-            "management_accounting": round(total_revenue - sum_attr(cost_confirmed_txs, "cost_excl_tax_total"), 2),
-            # 商品特定済み粗利益(旧称:確定粗利益): 商品不明(原価不明)を除いた、
-            # 原価が判明している取引範囲のみの粗利益。監査上の確認範囲を示す別指標であり、
-            # 管理会計上の物販粗利益とは異なる(2026-09-14確定。product-audit-spec.md §9)。
-            "product_identified_confirmed": sum_attr(cost_confirmed_txs, "gross_profit"),
+            # 管理会計上の物販粗利益(店舗全体の確定粗利益)。原価未確認の売上が1件でも
+            # 存在する場合はNone(未確定)とする。以前は原価未確認分をcost=0として
+            # 実質的に混ぜて計算していたが、これは「売上確定=原価確定」という誤った
+            # 前提だったため、2026-09-16に修正した(product-audit-spec.md §25参照)。
+            "management_accounting": (
+                round(total_revenue - confirmed_cogs, 2) if cogs_fully_confirmed else None
+            ),
+            # 原価未確認の売上をすべて原価0円と仮置きした場合の粗利益の「上限値」。
+            # 正式PL値ではなく、参考の上限目安としてのみ使用する
+            # (cogs_fully_confirmed=Falseのときのみ意味を持つ)。
+            "provisional_zero_cost_upper_bound": round(total_revenue - confirmed_cogs, 2),
+            # 商品特定済み粗利益(旧称:確定粗利益)。原価が判明している取引範囲のみの
+            # 粗利益で、confirmed_product_gross_profitと同値(2026-09-14確定。
+            # product-audit-spec.md §9参照)。
+            "product_identified_confirmed": confirmed_product_gross_profit,
+            "confirmed_product_gross_profit": confirmed_product_gross_profit,
         },
         "gross_margin": {
             "management_accounting": (
-                round((total_revenue - sum_attr(cost_confirmed_txs, "cost_excl_tax_total")) / total_revenue, 4)
-                if total_revenue else None
+                round((total_revenue - confirmed_cogs) / total_revenue, 4)
+                if cogs_fully_confirmed and total_revenue else None
+            ),
+            "provisional_zero_cost_upper_bound": (
+                round((total_revenue - confirmed_cogs) / total_revenue, 4) if total_revenue else None
             ),
             "product_identified_confirmed": (
-                round(sum_attr(cost_confirmed_txs, "gross_profit") / sum_attr(cost_confirmed_txs, "tax_excl_revenue"), 4)
-                if sum_attr(cost_confirmed_txs, "tax_excl_revenue") else None
+                round(confirmed_product_gross_profit / confirmed_product_sales, 4)
+                if confirmed_product_sales else None
+            ),
+            "confirmed_product_gross_margin": (
+                round(confirmed_product_gross_profit / confirmed_product_sales, 4)
+                if confirmed_product_sales else None
             ),
         },
+        # 売上確定・原価確定・粗利益確定を独立に区別するための明示フィールド
+        # (2026-09-16確定。product-audit-spec.md §25参照)。原価未確認取引をcost=0として
+        # 正式粗利益へ混ぜないため、常にconfirmed_cogsとunconfirmed_cogs_salesを分けて
+        # 保持する。
+        "cogs_fully_confirmed": cogs_fully_confirmed,
+        "confirmed_cogs": confirmed_cogs,
+        "unconfirmed_cogs_sales": unconfirmed_cogs_sales,
+        "confirmed_product_sales": confirmed_product_sales,
+        "confirmed_product_gross_profit": confirmed_product_gross_profit,
         "cost_confirmed_transaction_count": len(cost_confirmed_txs),
         "cost_unconfirmed_transaction_count": len(cost_unconfirmed_txs),
         "revenue_excl_tax_cost_confirmed": sum_attr(cost_confirmed_txs, "tax_excl_revenue"),
