@@ -44,6 +44,7 @@ SEVERITY_BY_CLASSIFICATION = {
     "I": "要確認",
     "K": "既知差異",  # 別期間の価格履歴と一致する既知の表示価格変動(product-audit-spec.md §8)
     "S": "正常",      # 売上シェア(確定)。1商品を複数スタッフで分担入力(product-audit-spec.md §11)
+    "N": "正常",      # 社内例外取引(通常非販売の備品等を原価のまま社内購入。product-audit-spec.md §18)
     "X": "重大エラー",  # 物販売上(AF列)自体が数式エラーで金額不明
 }
 
@@ -60,6 +61,7 @@ PRICE_STATUS_BY_CLASSIFICATION = {
     "I": "価格要確認",
     "K": "既知差異",
     "S": "価格確定",
+    "N": "価格確定",
     "X": "価格要確認",
 }
 
@@ -162,6 +164,40 @@ def apply_confirmed_purchaser_blocks(
                 break
 
 
+def load_confirmed_quantity_corrections(path: Path) -> dict[tuple, dict]:
+    """確定済み数量修正マスターを読み込む(2026-09-15確定、product-audit-spec.md §19参照)。
+    キーは(store_id, year_month, date, row)。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    result = {}
+    for rec in doc.get("corrections", []) or []:
+        key = (rec["store_id"], rec["year_month"], rec["date"], rec["row"])
+        result[key] = rec
+    return result
+
+
+def apply_confirmed_quantity_corrections(
+    rows: list[dict], *, store_id: str, year_month: str, date_key: str, corrections: dict[tuple, dict],
+) -> None:
+    """確定済み数量修正を、監査前の生データ行(rows)に適用する(in-place)。
+
+    日報K列の数量が、現場確認により実際の販売数量と異なると確定した場合に使う
+    (例:売上シェア運用によりK列が実数量と異なる値になっているケース)。数量を
+    修正することで、原価・価格一致判定を正しい数量ベースで計算し直せる
+    (元Excelは変更しない。product-audit-spec.md §19参照)。
+    """
+    for r in rows:
+        rec = corrections.get((store_id, year_month, date_key, r["row"]))
+        if rec is None:
+            continue
+        r["quantity_correction_note"] = (
+            f"日報K列は数量{r['quantity']}だが、現場確認により実際の販売数量は"
+            f"{rec['corrected_quantity']}と確定({rec['note'].strip()})"
+        )
+        r["quantity"] = rec["corrected_quantity"]
+
+
 def load_confirmed_category_reclassifications(path: Path) -> dict[tuple, dict]:
     """物販監査の対象から除外する、確定済みの区分振替マスターを読み込む(2026-09-15確定、
     product-audit-spec.md §14参照)。キーは(store_id, year_month, date, row)。
@@ -191,8 +227,14 @@ def load_confirmed_status_overrides(path: Path) -> dict[tuple, dict]:
 def apply_confirmed_status_overrides(
     transactions: list[ProductTransaction], *, store_id: str, year_month: str, overrides: dict[tuple, dict],
 ) -> int:
-    """確定済みステータス上書きを取引に反映する(in-place)。severityのみ変更し、
-    classification(価格・原価判定)自体は変更しない。適用件数を返す。
+    """確定済みステータス上書きを取引に反映する(in-place)。適用件数を返す。
+
+    `new_severity`は必須。`new_classification`・`new_price_status`・`new_transaction_type`は
+    任意で、現場確認により価格異常自体が解消したと確定した場合にのみ指定する
+    (例:「無」ではなく実際には売上シェアだったと現場確認できたが、対応する行が
+    ファイル内に見当たらず自動検出できないケース。product-audit-spec.md §19)。
+    指定が無ければ従来通りseverityのみを変更する(classification・原価判定は変更しない)。
+    `clear_flags: true`が指定されていれば、追加の要確認フラグ(flags)もクリアする。
     """
     applied = 0
     for t in transactions:
@@ -201,7 +243,62 @@ def apply_confirmed_status_overrides(
         if rec is None:
             continue
         t.severity = rec["new_severity"]
+        if rec.get("new_classification"):
+            t.classification = rec["new_classification"]
+        if rec.get("new_price_status"):
+            t.price_status = rec["new_price_status"]
+        if rec.get("new_transaction_type"):
+            t.transaction_type = rec["new_transaction_type"]
+        if rec.get("clear_flags"):
+            t.flags = []
         t.classification_detail = t.classification_detail + " / " + rec["note"].strip()
+        applied += 1
+    return applied
+
+
+def load_confirmed_exception_transactions(path: Path) -> dict[tuple, dict]:
+    """確定済み社内例外取引マスターを読み込む(2026-09-15確定、product-audit-spec.md §18参照)。
+    キーは(store_id, year_month, date, row)。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    result = {}
+    for rec in doc.get("exceptions", []) or []:
+        key = (rec["store_id"], rec["year_month"], rec["date"], rec["row"])
+        result[key] = rec
+    return result
+
+
+def apply_confirmed_exception_transactions(
+    transactions: list[ProductTransaction], *, store_id: str, year_month: str, exceptions: dict[tuple, dict],
+) -> int:
+    """確定済み社内例外取引を反映する(in-place)。適用件数を返す。
+
+    通常は販売しない備品等を、原価のまま社内購入した例外取引を扱う(product-audit-spec.md
+    §18)。商品マスター・原価マスターに存在しないことを異常として扱わず、
+    classification="N"(社内例外取引)・severity="正常"とし、原価=税抜売上(粗利益0円)
+    として確定する。通常の商品マスターには登録しない。
+    """
+    applied = 0
+    for t in transactions:
+        key = (store_id, year_month, t.date, t.sheet_row)
+        rec = exceptions.get(key)
+        if rec is None:
+            continue
+        t.product_name = rec["product_name"]
+        t.product_status = "商品特定済み"
+        t.purchaser_type = rec["purchaser_type_override"]
+        t.cost_excl_tax_unit = round(t.tax_excl_revenue / t.quantity, 2) if t.quantity else t.tax_excl_revenue
+        t.cost_excl_tax_total = t.tax_excl_revenue
+        t.cost_confirmed = True
+        t.gross_profit = 0.0
+        t.gross_margin = 0.0
+        t.classification = "N"
+        t.classification_detail = f"社内例外取引({rec['exception_type']}): {rec['note'].strip()}"
+        t.price_status = PRICE_STATUS_BY_CLASSIFICATION["N"]
+        t.severity = SEVERITY_BY_CLASSIFICATION["N"]
+        t.flags = []
+        t.transaction_type = "internal_exception_sale"
         applied += 1
     return applied
 
@@ -300,6 +397,7 @@ class ProductTransaction:
     flags: list[str] = field(default_factory=list)  # 追加の要確認事由(複数可)
     purchaser_alias_note: str = ""  # 別名(alias)経由でスタッフ/社内購入と判定した場合の備考
     purchaser_name_note: str = ""  # 確定済み連続購入ブロックにより顧客名を適用した場合の注記(§12)
+    quantity_correction_note: str = ""  # 確定済み数量修正を適用した場合の注記(§19)
     # 売上シェア(1商品を複数スタッフで分担入力)関連(2026-09-15確定。product-audit-spec.md §11)。
     transaction_type: str = "normal_sale"  # normal_sale/shared_sale/shared_sale_candidate
     share_group_id: str | None = None
@@ -388,7 +486,7 @@ def audit_transaction(
     product_name, quantity, gross_incl_tax, discount_incl_tax, net_incl_tax,
     tax_excl_revenue, price_history: dict, staff_price_rules: dict, staff_names: list[str],
     staff_aliases: dict | None = None, revenue_error: bool = False, note_raw: str | None = None,
-    purchaser_name_note: str = "",
+    purchaser_name_note: str = "", quantity_correction_note: str = "",
 ) -> ProductTransaction:
     purchaser_type = classify_purchaser(customer_name, staff_names, staff_aliases)
     alias_rec = resolve_purchaser_alias(customer_name, staff_aliases)
@@ -418,6 +516,7 @@ def audit_transaction(
             flags=["売上金額が数式エラーで不明"],
             purchaser_alias_note=alias_note,
             purchaser_name_note=purchaser_name_note,
+            quantity_correction_note=quantity_correction_note,
             share_marker_raw=note_raw,
         )
 
@@ -450,6 +549,7 @@ def audit_transaction(
             flags=flags,
             purchaser_alias_note=alias_note,
             purchaser_name_note=purchaser_name_note,
+            quantity_correction_note=quantity_correction_note,
             share_marker_raw=note_raw,
         )
 
@@ -476,6 +576,7 @@ def audit_transaction(
             flags=flags,
             purchaser_alias_note=alias_note,
             purchaser_name_note=purchaser_name_note,
+            quantity_correction_note=quantity_correction_note,
             share_marker_raw=note_raw,
         )
 
@@ -616,6 +717,9 @@ def audit_transaction(
             SEVERITY_BY_CLASSIFICATION[classification], "要確認" if flags else "正常",
         )
 
+    if quantity_correction_note:
+        detail = f"{detail} / {quantity_correction_note}"
+
     return ProductTransaction(
         date=date, sheet_row=row, customer_name=customer_name,
         purchaser_type=purchaser_type, product_status=determine_product_status(True),
@@ -632,6 +736,7 @@ def audit_transaction(
         severity=severity, flags=flags,
         purchaser_alias_note=alias_note,
         purchaser_name_note=purchaser_name_note,
+        quantity_correction_note=quantity_correction_note,
         share_marker_raw=note_raw,
     )
 

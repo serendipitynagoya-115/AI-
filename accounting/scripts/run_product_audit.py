@@ -66,6 +66,14 @@ def parse_args():
         "--status-overrides",
         default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_status_overrides.yaml"),
     )
+    p.add_argument(
+        "--quantity-corrections",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_quantity_corrections.yaml"),
+    )
+    p.add_argument(
+        "--exception-transactions",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_exception_transactions.yaml"),
+    )
     return p.parse_args()
 
 
@@ -128,7 +136,7 @@ def extract_retail_rows(ws, sheet: str):
             "gross_incl_tax": p, "discount_incl_tax": t, "net_incl_tax": w,
             "tax_excl_revenue": af, "revenue_error": af_is_error,
             "customer_name": b, "staff_col": c, "category_label": d, "note_raw": note_raw,
-            "purchaser_name_note": "",
+            "purchaser_name_note": "", "quantity_correction_note": "",
         })
     return rows
 
@@ -156,6 +164,8 @@ def main():
     purchaser_blocks_path = Path(args.purchaser_blocks)
     category_reclass_path = Path(args.category_reclassifications)
     status_overrides_path = Path(args.status_overrides)
+    quantity_corrections_path = Path(args.quantity_corrections)
+    exception_transactions_path = Path(args.exception_transactions)
     price_history = product_audit.load_price_history(price_history_path)
     staff_price_rules = product_audit.load_staff_price_rules(staff_rules_path)
     staff_aliases = product_audit.load_staff_aliases(staff_aliases_path) if staff_aliases_path.exists() else {}
@@ -171,12 +181,22 @@ def main():
         product_audit.load_confirmed_status_overrides(status_overrides_path)
         if status_overrides_path.exists() else {}
     )
+    quantity_corrections = (
+        product_audit.load_confirmed_quantity_corrections(quantity_corrections_path)
+        if quantity_corrections_path.exists() else {}
+    )
+    exception_transactions = (
+        product_audit.load_confirmed_exception_transactions(exception_transactions_path)
+        if exception_transactions_path.exists() else {}
+    )
     logger.info(f"価格履歴マスター読み込み: {len(price_history)}商品 ({price_history_path})")
     logger.info(f"スタッフ価格履歴マスター読み込み: {len(staff_price_rules)}商品 ({staff_rules_path})")
     logger.info(f"スタッフ・社内購入者の別名マスター読み込み: {len(staff_aliases)}件 ({staff_aliases_path})")
     logger.info(f"確定済み連続購入ブロック読み込み: {len(purchaser_blocks)}件 ({purchaser_blocks_path})")
     logger.info(f"確定済み区分振替マスター読み込み: {len(category_reclass_map)}件 ({category_reclass_path})")
     logger.info(f"確定済みステータス上書きマスター読み込み: {len(status_overrides)}件 ({status_overrides_path})")
+    logger.info(f"確定済み数量修正マスター読み込み: {len(quantity_corrections)}件 ({quantity_corrections_path})")
+    logger.info(f"確定済み社内例外取引マスター読み込み: {len(exception_transactions)}件 ({exception_transactions_path})")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -200,6 +220,13 @@ def main():
         product_audit.apply_confirmed_purchaser_blocks(
             day_retail_rows, store_id=store_id, year_month=year_month,
             date_key=date_key, blocks=purchaser_blocks,
+        )
+
+        # 確定済み数量修正(§19): 現場確認により実際の数量と異なると確定した行の
+        # 数量を補正する(元Excelは変更しない)。
+        product_audit.apply_confirmed_quantity_corrections(
+            day_retail_rows, store_id=store_id, year_month=year_month,
+            date_key=date_key, corrections=quantity_corrections,
         )
 
         # 確定済み区分振替(§14): 実際には物販ではなく施術・回数券(既存)側の売上と
@@ -230,6 +257,7 @@ def main():
                 price_history=price_history, staff_price_rules=staff_price_rules,
                 staff_names=staff_names, staff_aliases=staff_aliases, revenue_error=r["revenue_error"],
                 note_raw=r["note_raw"], purchaser_name_note=r["purchaser_name_note"],
+                quantity_correction_note=r["quantity_correction_note"],
             )
             day_txs.append(tx)
         all_transactions.extend(day_txs)
@@ -266,13 +294,23 @@ def main():
             f"区分振替(物販から施術/既存へ): {len(all_reclassified_rows)}件・税抜合計{total_reclassified}円"
         )
 
-    # 確定済みステータス上書き(§15): classification自体は変更せず、severityのみ
-    # 「分類保留」に変更する(事実は確定済みだが、社割ルール等のマスター登録が未了のもの)。
+    # 確定済みステータス上書き(§15・§19): 通常はclassification自体は変更せず、
+    # severityのみ「分類保留」に変更する(事実は確定済みだが、社割ルール等のマスター登録が
+    # 未了のもの)。現場確認により価格異常自体が解消したと確定できたがファイル内に対応する
+    # 行が見当たらないケースに限り、classification自体もあわせて上書きする(§19)。
     overrides_applied = product_audit.apply_confirmed_status_overrides(
         all_transactions, store_id=store_id, year_month=year_month, overrides=status_overrides,
     )
     if overrides_applied:
-        logger.info(f"確定済みステータス上書きを適用: {overrides_applied}件(severity→分類保留)")
+        logger.info(f"確定済みステータス上書きを適用: {overrides_applied}件")
+
+    # 確定済み社内例外取引(§18): 通常非販売の備品等を原価のまま社内購入した例外取引を、
+    # 商品マスター・原価マスター不在を異常扱いせず、正常な例外取引として確定する。
+    exceptions_applied = product_audit.apply_confirmed_exception_transactions(
+        all_transactions, store_id=store_id, year_month=year_month, exceptions=exception_transactions,
+    )
+    if exceptions_applied:
+        logger.info(f"確定済み社内例外取引を適用: {exceptions_applied}件(classification→N)")
 
     # 売上シェア(1商品を複数スタッフで分担入力)の検出。物販売上総額・元Excelは変更せず、
     # 該当取引のclassification・severity等のみ調整する(2026-09-15確定。
@@ -408,6 +446,39 @@ def main():
     cost_confirmed_txs = [t for t in all_transactions if t.cost_confirmed]
     cost_unconfirmed_txs = [t for t in all_transactions if not t.cost_confirmed]
 
+    # 監査結果の観点別件数(2026-09-15確定。product-audit-spec.md §20参照)。
+    # 1取引が複数の観点に同時に該当しうるため、互いに排他的な分類ではなく、
+    # それぞれ独立に集計する(例:価格異常かつ購入者不明、という取引もありうる)。
+    price_anomaly_txs = [t for t in all_transactions if t.classification in ("C", "D")]
+    unknown_product_txs = [t for t in all_transactions if t.product_status == "商品不明"]
+    unknown_purchaser_txs = [t for t in all_transactions if t.purchaser_type == "購入者不明"]
+    unresolved_share_txs = [
+        t for t in all_transactions if t.transaction_type in ("shared_sale_candidate", "unknown")
+    ]
+    other_pending_txs = [
+        t for t in all_transactions
+        if t.severity == "要確認"
+        and t.classification not in ("C", "D")
+        and t.product_status != "商品不明"
+        and t.transaction_type not in ("shared_sale_candidate", "unknown")
+    ]
+    audit_status_counts = {
+        "price_anomaly": len(price_anomaly_txs),
+        "unknown_product": len(unknown_product_txs),
+        "unknown_purchaser": len(unknown_purchaser_txs),
+        "unresolved_shared_sale": len(unresolved_share_txs),
+        "cost_unconfirmed": len(cost_unconfirmed_txs),
+        "other_pending_review": len(other_pending_txs),
+    }
+    logger.info(
+        f"監査結果の観点別件数: 価格異常={audit_status_counts['price_anomaly']}件 / "
+        f"商品不明={audit_status_counts['unknown_product']}件 / "
+        f"購入者不明={audit_status_counts['unknown_purchaser']}件 / "
+        f"売上シェア未解決={audit_status_counts['unresolved_shared_sale']}件 / "
+        f"原価未確認={audit_status_counts['cost_unconfirmed']}件 / "
+        f"その他要確認={audit_status_counts['other_pending_review']}件"
+    )
+
     # 調査2: 「購入者区分」(スタッフ/社内購入/一般顧客/購入者不明)と「商品特定状態」
     # (商品特定済み/商品不明)を、それぞれ独立の軸として集計する(2026-09-14確定)。
     # 商品不明だからといって購入者区分の集計から除外せず、逆も行わない。
@@ -519,6 +590,7 @@ def main():
         "classification_counts": classification_counts,
         "severity_counts": severity_counts,
         "price_status_counts": price_status_counts,
+        "audit_status_counts": audit_status_counts,
         "inventory_reconciliation": {
             "product_blocks_checked": len(inventory_blocks),
             "mismatch_count": len(inventory_reconciliation_rows),
@@ -624,6 +696,7 @@ def main():
             "flags": "・".join(t.flags) if t.flags else "",
             "purchaser_alias_note": t.purchaser_alias_note,
             "purchaser_name_note": t.purchaser_name_note,
+            "quantity_correction_note": t.quantity_correction_note,
             "transaction_type": t.transaction_type,
             "share_group_id": t.share_group_id or "",
             "share_count": t.share_count,
@@ -641,6 +714,7 @@ def main():
                     "cost_excl_tax_total", "gross_profit", "gross_margin",
                     "classification", "classification_detail", "price_status", "cost_confirmed",
                     "severity", "flags", "purchaser_alias_note", "purchaser_name_note",
+                    "quantity_correction_note",
                     "transaction_type", "share_group_id", "share_count", "share_total",
                     "linked_product", "linked_rows", "share_marker_raw"],
     )
@@ -682,6 +756,8 @@ def main():
             logger.info(f"判定{cls}(既知差異): {classification_counts[cls]}件")
         elif cls == "S":
             logger.info(f"判定{cls}(売上シェア確定): {classification_counts[cls]}件")
+        elif cls == "N":
+            logger.info(f"判定{cls}(社内例外取引): {classification_counts[cls]}件")
         elif cls != "A":
             logger.warning(f"判定{cls}: {classification_counts[cls]}件")
 
