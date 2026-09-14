@@ -644,8 +644,18 @@ def main():
     # 売上額)を明示的に分離して保持する。
     cogs_fully_confirmed = len(cost_unconfirmed_txs) == 0
     confirmed_cogs = sum_attr(cost_confirmed_txs, "cost_excl_tax_total")
-    confirmed_product_sales = sum_attr(cost_confirmed_txs, "tax_excl_revenue")
-    confirmed_product_gross_profit = sum_attr(cost_confirmed_txs, "gross_profit")
+    # confirmed_product_sales・confirmed_product_gross_profitは、商品特定済み・原価確認済み
+    # 取引に限定した「管理会計PL採用ベース」の売上・粗利益。原価は監査調整の対象外
+    # (監査調整は売上側のみに適用する。2026-09-16確定。product-audit-spec.md §28参照)なので、
+    # 監査調整額(audit_adjustment_excl_tax)をそのまま加算すれば粗利益も整合する
+    # (粗利益=売上-原価であり、原価が変わらない以上、粗利益の調整額は売上の調整額と同額)。
+    confirmed_product_sales_source_current = sum_attr(cost_confirmed_txs, "tax_excl_revenue")
+    confirmed_product_audit_adjustment = sum_attr(cost_confirmed_txs, "audit_adjustment_excl_tax")
+    confirmed_product_sales = round(confirmed_product_sales_source_current + confirmed_product_audit_adjustment, 2)
+    confirmed_product_gross_profit_source_current = sum_attr(cost_confirmed_txs, "gross_profit")
+    confirmed_product_gross_profit = round(
+        confirmed_product_gross_profit_source_current + confirmed_product_audit_adjustment, 2
+    )
     unconfirmed_cogs_sales = sum_attr(cost_unconfirmed_txs, "tax_excl_revenue")
 
     # 価格可変・非定番商品(V判定。セット料金等。product-audit-spec.md §24参照)。
@@ -698,6 +708,29 @@ def main():
     # 1つの取引が両方の属性(例:購入者=一般顧客、商品=商品不明)を同時に持てる。
     # 各軸それぞれの合計が物販総売上と一致することを検証する。
     total_revenue = sum_attr(all_transactions, "tax_excl_revenue")
+
+    # 監査調整(audit_adjustment、2026-09-16確定。product-audit-spec.md §28参照):
+    # 商品マスターの後日更新により、過去の取引の表示売上(日報AF列)が歴史的事実と
+    # 異なっている取引(K判定の一部)について、管理会計PLに採用すべき売上を算出する。
+    # 「単なるK判定件数」では判定せず、各取引ごとにaudit_adjustment_applicableを
+    # 判定済み(product_audit.py側)。全店舗共通のロジックであり、対象取引が無い店舗では
+    # audit_adjustment=0円となり、management_accounting_total=total_revenueと一致する。
+    #   source_current_total  = 現在の日報AFに表示されている税抜売上(total_revenueと同値)
+    #   audit_adjustment       = 監査調整額(対象取引の合計、符号付き)
+    #   management_accounting_total = source_current_total + audit_adjustment(PL採用売上)
+    source_current_total = total_revenue
+    audit_adjustment_total = sum_attr(all_transactions, "audit_adjustment_excl_tax")
+    management_accounting_total = round(source_current_total + audit_adjustment_total, 2)
+    audit_adjustment_txs = [t for t in all_transactions if t.audit_adjustment_applicable]
+    if audit_adjustment_txs:
+        logger.info(
+            f"監査調整(audit_adjustment)対象取引: {len(audit_adjustment_txs)}件 / "
+            f"調整額合計: {audit_adjustment_total:+.2f}円 / "
+            f"PL採用売上(management_accounting_total): {management_accounting_total}円"
+            f"(現在表示ベース{source_current_total}円との差)"
+        )
+    else:
+        logger.info("監査調整(audit_adjustment)対象取引: 0件(PL採用売上=現在表示ベース売上)")
 
     purchaser_types = ["スタッフ", "社内購入", "一般顧客", "購入者不明"]
     purchaser_revenue = {
@@ -903,7 +936,18 @@ def main():
         },
         "revenue_excl_tax": {
             # この値は「物販売上」であり、店舗全体売上ではない(store_overall_revenue参照)。
+            # 売上区分(2026-09-16確定。product-audit-spec.md §23・§28参照):
+            #   total / source_current_total: 現在の日報AFに表示されている税抜売上そのまま
+            #     (監査調整前。totalの意味はこれまでと変更していない = silent meaning changeではない)。
+            #   audit_adjustment: 商品マスターの後日更新により過去の表示が歴史的事実と
+            #     異なっている取引(K判定の一部)についてのみ算出する調整額。対象取引が
+            #     無い店舗では0円。
+            #   management_accounting_total: source_current_total + audit_adjustment。
+            #     管理会計PL(gross_profit.management_accounting等)にはこちらを使用する。
             "total": total_revenue,
+            "source_current_total": source_current_total,
+            "audit_adjustment": audit_adjustment_total,
+            "management_accounting_total": management_accounting_total,
             "by_purchaser_type": {**purchaser_revenue, "check_diff": purchaser_check_diff},
             "by_product_status": {**product_status_revenue, "check_diff": product_status_check_diff},
         },
@@ -912,7 +956,8 @@ def main():
             # 一致するが、原価未確認の売上がある店舗では「現時点で確認できている原価」に
             # すぎず、「物販全体の確定原価」ではない(2026-09-16確定。product-audit-spec.md
             # §25参照)。cogs_fully_confirmedがFalseの場合は必ずconfirmed_cogsと
-            # 併記し、単独で「原価」として扱わないこと。
+            # 併記し、単独で「原価」として扱わないこと。原価は監査調整の対象外
+            # (監査調整は売上側のみに適用する。§28参照)。
             "actual_total": confirmed_cogs,
         },
         "gross_profit": {
@@ -920,26 +965,31 @@ def main():
             # 存在する場合はNone(未確定)とする。以前は原価未確認分をcost=0として
             # 実質的に混ぜて計算していたが、これは「売上確定=原価確定」という誤った
             # 前提だったため、2026-09-16に修正した(product-audit-spec.md §25参照)。
+            # 2026-09-16、売上側もmanagement_accounting_total(監査調整後のPL採用売上)を
+            # 使用するよう修正した(§28参照。従来はsource_current_total(現在表示ベース)を
+            # 使っており、監査調整対象店舗で粗利益が過大に出る不具合があった)。
             "management_accounting": (
-                round(total_revenue - confirmed_cogs, 2) if cogs_fully_confirmed else None
+                round(management_accounting_total - confirmed_cogs, 2) if cogs_fully_confirmed else None
             ),
             # 原価未確認の売上をすべて原価0円と仮置きした場合の粗利益の「上限値」。
             # 正式PL値ではなく、参考の上限目安としてのみ使用する
-            # (cogs_fully_confirmed=Falseのときのみ意味を持つ)。
-            "provisional_zero_cost_upper_bound": round(total_revenue - confirmed_cogs, 2),
+            # (cogs_fully_confirmed=Falseのときのみ意味を持つ)。売上側は
+            # management_accounting_total(監査調整後)を使用する。
+            "provisional_zero_cost_upper_bound": round(management_accounting_total - confirmed_cogs, 2),
             # 商品特定済み粗利益(旧称:確定粗利益)。原価が判明している取引範囲のみの
             # 粗利益で、confirmed_product_gross_profitと同値(2026-09-14確定。
-            # product-audit-spec.md §9参照)。
+            # product-audit-spec.md §9参照)。こちらも監査調整後のPL採用売上ベース。
             "product_identified_confirmed": confirmed_product_gross_profit,
             "confirmed_product_gross_profit": confirmed_product_gross_profit,
         },
         "gross_margin": {
             "management_accounting": (
-                round((total_revenue - confirmed_cogs) / total_revenue, 4)
-                if cogs_fully_confirmed and total_revenue else None
+                round((management_accounting_total - confirmed_cogs) / management_accounting_total, 4)
+                if cogs_fully_confirmed and management_accounting_total else None
             ),
             "provisional_zero_cost_upper_bound": (
-                round((total_revenue - confirmed_cogs) / total_revenue, 4) if total_revenue else None
+                round((management_accounting_total - confirmed_cogs) / management_accounting_total, 4)
+                if management_accounting_total else None
             ),
             "product_identified_confirmed": (
                 round(confirmed_product_gross_profit / confirmed_product_sales, 4)
@@ -963,6 +1013,15 @@ def main():
         "cost_unconfirmed_transaction_count": len(cost_unconfirmed_txs),
         "revenue_excl_tax_cost_confirmed": sum_attr(cost_confirmed_txs, "tax_excl_revenue"),
         "revenue_excl_tax_cost_unconfirmed": sum_attr(cost_unconfirmed_txs, "tax_excl_revenue"),
+        # 監査調整(audit_adjustment)の店舗全体サマリ(2026-09-16確定。§28参照)。
+        # 対象取引が無い店舗ではaudit_adjustment=0円、management_accounting_total=
+        # source_current_totalと一致する。
+        "audit_adjustment_summary": {
+            "source_current_total": source_current_total,
+            "audit_adjustment": audit_adjustment_total,
+            "management_accounting_total": management_accounting_total,
+            "adjusted_transaction_count": len(audit_adjustment_txs),
+        },
     }
 
     out_dir = io_utils.OUTPUT_DIR / "product_audit" / year_month
@@ -983,6 +1042,8 @@ def main():
             "actual_price_incl_tax": t.actual_price_incl_tax,
             "discount_incl_tax": t.discount_incl_tax,
             "tax_excl_revenue": t.tax_excl_revenue,
+            "audit_adjustment_applicable": t.audit_adjustment_applicable,
+            "audit_adjustment_excl_tax": t.audit_adjustment_excl_tax,
             "cost_excl_tax_total": t.cost_excl_tax_total,
             "gross_profit": t.gross_profit,
             "gross_margin": t.gross_margin,
@@ -1009,6 +1070,7 @@ def main():
         fieldnames=["date", "row", "customer_name", "purchaser_type", "product_status", "product_name",
                     "quantity", "regular_price_incl_tax_expected", "staff_price_incl_tax_expected",
                     "actual_price_incl_tax", "discount_incl_tax", "tax_excl_revenue",
+                    "audit_adjustment_applicable", "audit_adjustment_excl_tax",
                     "cost_excl_tax_total", "gross_profit", "gross_margin",
                     "classification", "classification_detail", "price_status", "cost_confirmed",
                     "severity", "flags", "purchaser_alias_note", "purchaser_name_note",

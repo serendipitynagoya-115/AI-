@@ -422,6 +422,13 @@ class ProductTransaction:
     linked_product: str | None = None   # グループが表す実際の商品名
     linked_rows: list[int] = field(default_factory=list)  # グループを構成する全行番号
     share_marker_raw: str | None = None  # 日報I列(既存 単発・回数券欄)の生値。「売上シェア」の明示記載を保持する。
+    # 監査調整額(audit_adjustment、税抜)。K判定のうち、取引日時点より後の期間の
+    # 価格履歴と一致した(=商品マスターの後日更新により過去の表示が歴史的事実と
+    # 異なっている)取引についてのみ算出する。単なる価格ルール違反・スタッフ価格差異
+    # には適用しない(2026-09-16確定。product-audit-spec.md §28参照)。
+    audit_adjustment_excl_tax: float = 0.0
+    audit_adjustment_applicable: bool = False
+    audit_adjustment_note: str = ""
 
 
 def _has_share_marker(t: ProductTransaction) -> bool:
@@ -755,6 +762,9 @@ def audit_transaction(
     # 日報Excelの商品マスター更新による既知の表示価格変動として区別する
     # (product-audit-spec.md §8・2026-09-12確定)。
     known_flags: list[str] = []
+    audit_adjustment_excl_tax = 0.0
+    audit_adjustment_applicable = False
+    audit_adjustment_note = ""
     if classification in ("C", "D"):
         other_rec = _find_known_discrepancy(records, rec, qty, gross_incl_tax)
         if other_rec is not None:
@@ -766,6 +776,42 @@ def audit_transaction(
                 f"{other_rec['regular_price_incl_tax']}円)と一致。日報Excelの商品マスターが後日更新され、"
                 "過去の表示価格が変わったことによる既知の差異(product-audit-spec.md §8参照)。"
             )
+
+            # 監査調整(audit_adjustment)の判定: 一致した別期間の価格履歴の開始日が、
+            # 取引日時点の価格履歴の開始日より後(=将来)である場合のみ、「商品マスターが
+            # 後日更新され、過去の取引の表示が歴史的事実と異なっている」パターンと判断する。
+            # 一致した別期間が取引日時点より前(過去)の場合は、将来のマスター更新による
+            # 表示汚染とは異なる可能性があるため、自動調整の対象にはしない
+            # (2026-09-16確定。product-audit-spec.md §28参照。§23の「監査調整売上」と
+            # 「ルール基準参考額」を混同しないこと)。
+            own_start = dt.date.fromisoformat(rec["effective_start_date"])
+            other_start = dt.date.fromisoformat(other_rec["effective_start_date"])
+            if other_start > own_start:
+                own_excl = rec.get("regular_price_excl_tax")
+                other_excl = other_rec.get("regular_price_excl_tax")
+                if own_excl is not None and other_excl is not None:
+                    audit_adjustment_applicable = True
+                    audit_adjustment_excl_tax = round((own_excl - other_excl) * qty, 2)
+                    audit_adjustment_note = (
+                        f"監査調整対象: 取引日時点({rec['effective_start_date']}〜)の税抜正規価格"
+                        f"{own_excl}円/個に対し、表示は後日({other_rec['effective_start_date']}〜)の"
+                        f"税抜正規価格{other_excl}円/個に基づいており、歴史的事実と異なる。"
+                        f"管理会計PL採用売上への調整額{audit_adjustment_excl_tax:+.2f}円"
+                        "(product-audit-spec.md §28参照)。"
+                    )
+                else:
+                    audit_adjustment_note = (
+                        "既知差異(K)だが、税抜正規価格が価格履歴に未登録のため監査調整額を"
+                        "推測せず算出しない(調整額0円のまま保持)。"
+                    )
+            else:
+                audit_adjustment_note = (
+                    f"既知差異(K)だが、一致した価格履歴({other_rec['effective_start_date']}〜)が"
+                    f"取引日時点の価格履歴({rec['effective_start_date']}〜)より前の期間のため、"
+                    "商品マスターの後日更新による表示汚染パターンとは異なる。自動での監査調整は"
+                    "行わない(個別確認が必要な場合はオーナー確認のうえ別途対応)。"
+                )
+            detail = f"{detail} {audit_adjustment_note}"
 
     if classification == "K":
         # 既知差異は原因特定済みのため、追加の要確認フラグ(異常値引き等)は付与せず、
@@ -811,6 +857,9 @@ def audit_transaction(
         purchaser_name_note=purchaser_name_note,
         quantity_correction_note=quantity_correction_note,
         share_marker_raw=note_raw,
+        audit_adjustment_excl_tax=audit_adjustment_excl_tax,
+        audit_adjustment_applicable=audit_adjustment_applicable,
+        audit_adjustment_note=audit_adjustment_note,
     )
 
 

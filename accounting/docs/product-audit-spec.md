@@ -777,3 +777,61 @@ overrides:
 - `confirmed_purchaser_blocks.yaml`(§12):8/29行11(MVM、購入者「浅井咲也子」、直前行10の本人施術に連続)・8/29行13(リセットフローラ、購入者「竹内季子」、直前行12の本人施術に連続)。それぞれ単独行(start_row=end_row)のブロックとして登録し、空欄行を無条件に前行の購入者へ引き継ぐ一般ルールにはしていない。
 
 8/20(未説明残差+9,784円)・8/25(-9,130円)・8/27(-10,000円)の支払差異、および在庫マイナス(§25参照の在庫帳観察結果)は、いずれも2026-09-16時点でオーナー確認が取れておらず、confirmed設定へは登録していない。店舗全体要確認3件として引き続き保持する。
+
+## 28. 監査調整(audit_adjustment)による管理会計PL採用売上(2026-09-16確定)
+
+### 背景・発見された不具合
+
+§23で「実績売上」「監査調整売上」「ルール基準参考額」の用語を整理した際、`gross_profit.management_accounting`(管理会計上の物販粗利益)の集計コードは、常に`revenue_excl_tax.total`(=日報AF列の現在表示をそのまま合計した「実績/現在表示売上」)を使って計算していた。みよし店8月のマグネシウム(ドクターセレン)のように、商品マスターが9月に更新されたことで8月分の日報AF列自体が9月価格(3,672円/個、税抜3,400円)で再計算・表示され、実際に8月に収受した金額(3,456円/個、税抜3,200円)と異なっている(=歴史的事実と異なる表示になっている)ケースでは、`management_accounting`が本来PLに採用すべき「監査調整後の売上」ではなく、汚染された「現在表示売上」をそのまま使ってしまい、粗利益が過大(みよし店の場合+3,800円)に算出される不具合があった(2026-09-16、オーナー指摘により発覚)。
+
+この修正は、みよし店固有の固定補正額(3,800円)としてではなく、**全店舗共通の一般ロジック**として実装した(§23の「監査調整売上」の定義を、コード上のPL集計に正式に反映するもの)。
+
+### 会計定義(用語の正式区分)
+
+1. **`source_current_revenue`(現在表示売上)** = 日報AF列(税抜売上)に現在表示されている金額をそのまま合計した値。`revenue_excl_tax.total`・`revenue_excl_tax.source_current_total`はこの値(両者は同値。`total`の意味は従来から変更していない)。
+2. **`audit_adjustment`(監査調整額)** = 過去の取引が、商品マスターの後日更新等によって現在表示上、歴史的事実と異なる金額になっている場合の調整額(符号付き、税抜)。後述の判定基準を満たす取引のみを対象とし、単なる価格ルール違反・スタッフ価格差異には適用しない。
+3. **`management_accounting_revenue`(管理会計PL採用売上)** = `source_current_revenue + audit_adjustment`。`gross_profit.management_accounting`・`gross_margin.management_accounting`の計算にはこちらを使用する。
+4. **`management_accounting_gross_profit`** = `management_accounting_revenue - actual_cogs(confirmed_cogs)`。
+
+監査調整が無い店舗(緑店・刈谷店等)では `source_current_revenue = management_accounting_revenue` となり、従来の計算結果と一致する。
+
+これは§23の「監査調整売上」の会計上の定義そのものであり、「ルール基準参考額」(緑店8/8プロテインのような、収受額は正しいが規定と異なる値引が適用されたかを比較する参考値。PLには一切使用しない)とは別軸であることに注意する。監査調整はPLに使用する値そのものを補正するが、ルール基準参考額は参考比較のみで実績売上・監査調整売上のいずれも上書きしない。
+
+### K判定との関係(自動判定基準)
+
+「K判定(既知差異)だから無条件で監査調整する」のではない。`product_audit.py`の`audit_transaction`は、C・D(価格不一致)と判定された取引について、取引日以外の期間の価格履歴と一致するかを確認しK判定へ再分類するが(§8)、このうち **一致した別期間の価格履歴の開始日(`effective_start_date`)が、取引日時点の価格履歴の開始日より後(将来)である場合のみ**、「商品マスターが後日更新され、過去の取引の表示が歴史的事実と異なっている」パターンと判定し、`audit_adjustment_applicable=True`とする。
+
+判定基準を満たす場合、調整額は両期間の**税抜正規価格**(`regular_price_excl_tax`。価格履歴に登録済みの値をそのまま使用し、税率の推測は行わない)の差に数量を掛けて算出する:
+
+```
+audit_adjustment_excl_tax(1行) = (取引日時点の税抜正規価格 − 一致した別期間の税抜正規価格) × 数量
+```
+
+一致した別期間が取引日時点より**前**(過去)の場合や、税抜正規価格が価格履歴に未登録の場合は、自動での監査調整は行わない(推測で埋めない。調整額は0円のまま保持し、`classification_detail`にその理由を記録する)。
+
+この基準はK判定の原因判定ロジック自体とは独立した追加チェックであり、既存のK判定件数・severity・支払照合(§25)・既知構造差異(§26)・confirmed設定には一切影響しない(売上の「どの値をPLに採用するか」という集計層のみを変更する)。
+
+### JSON summaryの出力形式
+
+`revenue_excl_tax`:
+
+```json
+{
+  "total": 623524.63,
+  "source_current_total": 623524.63,
+  "audit_adjustment": -3800.0,
+  "management_accounting_total": 619724.63,
+  "by_purchaser_type": { ... },
+  "by_product_status": { ... }
+}
+```
+
+`total`は既存互換性のため残しているが、意味は`source_current_total`と同一(現在表示ベース。監査調整前)であり、値・意味とも変更していない(silent meaning changeではない)。管理会計PLで使う値は`management_accounting_total`。
+
+`gross_profit.management_accounting`・`gross_margin.management_accounting`・`gross_profit.provisional_zero_cost_upper_bound`・`confirmed_product_sales`・`confirmed_product_gross_profit`は、いずれも`management_accounting_total`(監査調整後)ベースで計算する。原価(`confirmed_cogs`)は監査調整の対象外(調整は売上側のみに適用する)。原価未確認の売上が存在する店舗(§25参照)では、`management_accounting_revenue`自体は算出してよいが、`gross_profit.management_accounting`・`gross_margin.management_accounting`は原価未確認取引が0件になるまで`null`のまま保持する(原価0円と仮置きしない)。
+
+店舗全体サマリとして`audit_adjustment_summary`(`source_current_total`・`audit_adjustment`・`management_accounting_total`・`adjusted_transaction_count`)をJSON summaryのトップレベルにも出力する。
+
+### 2026-09-16時点の5店舗の結果
+
+守山店・みよし店・日進赤池店のドクターセレン(マグネシウム)取引に、商品マスターの9月更新による表示汚染(監査調整対象)が確認された。緑店・刈谷店は対象取引なし(8月正規価格のまま)。詳細はCLAUDE.mdの店舗別記録を参照。
