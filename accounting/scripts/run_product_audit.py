@@ -297,6 +297,7 @@ def main():
             )
             day_txs.append(tx)
         all_transactions.extend(day_txs)
+        row_to_tx = {t.sheet_row: t for t in day_txs}
 
         # 調査1: 日別シートAF54(物販税別合計)と、監査エンジンがその日に認識した
         # 物販税抜売上の合計を突き合わせる。1円以上ずれた場合は行番号まで特定する。
@@ -323,50 +324,86 @@ def main():
                     f"AF(税抜)={r['tax_excl_revenue']} P(税込)={r['gross_incl_tax']}"
                 )
 
-        # 調査: 支払金額(現金+カード+PayPay)と売上金額(累計税込)の日別突合
-        # (2026-09-16確定)。物販固有ではなく店舗全体の照合のため、商品監査の
-        # 要確認(severity)とは別軸の「店舗全体要確認」として集計する
+        # 調査: 支払金額(現金+カード+PayPay)と売上金額(最終売上X列)の行別突合
+        # (2026-09-16確定・行単位方式に修正)。物販固有ではなく店舗全体の照合のため、
+        # 商品監査の要確認(severity)とは別軸の「店舗全体要確認」として集計する
         # (product-audit-spec.md §25参照)。
         #
-        # 既知差異(K判定・§8)のマグネシウム等が含まれる日は、日報の表示価格(X列・AB列)
-        # が後日のマスター更新で汚染されている一方、Y/Z/AA列(現金・カード・PayPay)には
-        # 取引時点に実際に収受した真の金額が記録されているため、単純な合計比較では
-        # 機械的に差が生じる(2026-09-16、守山・みよし両店の全不一致日で確認)。
-        # この汚染額をスタッフ社割・値引ありの取引まで含めて正確に打ち消す計算は
-        # 複雑になるため(値引前後どちらの金額と一致したかが取引ごとに異なる)、
-        # 誤った補正で新たな見落としを生まないよう、既知差異(K)を含む日は自動判定の
-        # 対象から外し、診断用データとして記録するにとどめる(INFO、要確認に含めない)。
-        # 既知差異を含まない日の不一致だけを、原因未特定の店舗全体要確認として扱う。
-        day_has_known_discrepancy = any(t.classification == "K" for t in day_txs)
-
+        # 既知差異(K判定・§8)のマグネシウム等を含む「日」を丸ごと自動判定から
+        # 除外すると、同じ日に別の原因不明の支払差異が混在していた場合に見落とす
+        # (2026-09-16、日進赤池店8/20で実際に発生:マグネシウム契約行の-216円は
+        # 既知差異で説明できるが、同日の別の新規契約行に+9,784円の未説明差額が
+        # 混在していた)。このため、日全体を除外するのではなく、行ごとに
+        # 「その行の支払差額が、その行のK判定商品の価格履歴汚染額とちょうど一致するか」
+        # を個別に判定する。一致する行だけを説明済みとして除外し、一致しない行
+        # (K判定の取引が無い行を含む)の差額は、日ごとに合計してから残差
+        # (unexplained_residual)として店舗全体要確認の対象にする。
+        #
+        # K判定取引の行は、実際の支払額とX(最終売上)の差が、その取引自身の価格履歴
+        # 汚染額(値引前(gross)の実売価格と、取引日時点の正規価格との差、数量倍済み)と
+        # 一致するかどうかで判定する。値引額がいくらであっても、実際に収受した金額が
+        # 「取引日時点の正規価格(またはスタッフ価格)−値引額」であれば、この差は
+        # 数式的に値引額に依存せず常に一定になるため(2026-09-16、守山8月8/27の
+        # スタッフ価格取引・8/16の値引ありの取引の両方で成立することを確認済み)、
+        # 値引の有無やスタッフ/一般客の別で場合分けする必要が無い。行が新規契約等の
+        # 他の売上と合算されていても、この取引自身の汚染額だけを切り出して判定できる。
+        # 一致しない場合(日進赤池8/20行5のように、合算された別の売上側に真の不整合が
+        # ある等)は、誤って過剰補正しないよう未説明残差に含める。
         def _num_or_none(v):
             return None if isinstance(v, str) else v
 
-        cash = _num_or_none(ws["Y54"].value) or 0
-        card = _num_or_none(ws["Z54"].value) or 0
-        paypay = _num_or_none(ws["AA54"].value) or 0
-        revenue_incl_tax = _num_or_none(ws["AB54"].value)
-        if revenue_incl_tax is not None:
-            pay_diff = round(cash + card + paypay - revenue_incl_tax, 2)
-            if abs(pay_diff) >= 1.0:
-                payment_reconciliation_rows.append({
-                    "day": day, "cash": cash, "card": card, "paypay": paypay,
-                    "revenue_incl_tax": revenue_incl_tax, "diff": pay_diff,
-                    "contains_known_discrepancy": day_has_known_discrepancy,
-                    "counted_as_pending_review": not day_has_known_discrepancy,
-                })
-                if day_has_known_discrepancy:
-                    logger.info(
-                        f"[{day}日] 支払金額と売上金額に差({pay_diff}円)があるが、既知差異(K判定)"
-                        "の取引を含む日のため、価格履歴汚染による説明可能な差の可能性が高く、"
-                        "自動では店舗全体要確認に計上しない(診断データとして記録)。"
-                    )
-                else:
-                    logger.error(
-                        f"[{day}日] 支払金額と売上金額の不一致を検出: 現金={cash} カード={card} "
-                        f"PayPay={paypay} (合計{round(cash + card + paypay, 2)}) / "
-                        f"売上(税込累計)={revenue_incl_tax} (差={pay_diff})。店舗全体要確認。"
-                    )
+        day_row_diffs = []
+        for r in list(range(DATA_START_ROW, DATA_END_ROW + 1)) + list(range(OVERFLOW_START_ROW, OVERFLOW_END_ROW + 1)):
+            x = _num_or_none(ws[f"X{r}"].value)
+            if x in (None, 0):
+                continue
+            y = _num_or_none(ws[f"Y{r}"].value) or 0
+            z = _num_or_none(ws[f"Z{r}"].value) or 0
+            aa = _num_or_none(ws[f"AA{r}"].value) or 0
+            paid = y + z + aa
+            row_diff = round(paid - x, 2)
+            if abs(row_diff) < 1.0:
+                continue
+            tx = row_to_tx.get(r)
+            explained = False
+            if tx is not None and tx.classification == "K" and tx.regular_price_incl_tax_expected is not None:
+                qty = tx.quantity if tx.quantity else 1
+                known_contamination = round(tx.actual_price_incl_tax - tx.regular_price_incl_tax_expected * qty, 2)
+                explained = abs(row_diff + known_contamination) < 1.0
+            day_row_diffs.append({
+                "row": r, "diff": row_diff, "explained_by_known_k": explained,
+                "product_name": tx.product_name if tx is not None else None,
+            })
+
+        day_unexplained_residual = round(sum(d["diff"] for d in day_row_diffs if not d["explained_by_known_k"]), 2)
+        day_known_k_explained_total = round(sum(d["diff"] for d in day_row_diffs if d["explained_by_known_k"]), 2)
+        if day_row_diffs:
+            unexplained_rows = [d for d in day_row_diffs if not d["explained_by_known_k"]]
+            unexplained_rows_desc = "; ".join(
+                f"行{d['row']}({d['product_name'] or '無'}:{d['diff']:+.2f}円)" for d in unexplained_rows
+            )
+            payment_reconciliation_rows.append({
+                "day": day,
+                "raw_diff": round(day_unexplained_residual + day_known_k_explained_total, 2),
+                "known_explained_difference": day_known_k_explained_total,
+                "unexplained_residual": day_unexplained_residual,
+                "unexplained_rows": unexplained_rows_desc,
+                "counted_as_pending_review": abs(day_unexplained_residual) >= 1.0,
+            })
+            if abs(day_unexplained_residual) >= 1.0:
+                logger.error(
+                    f"[{day}日] 既知差異では説明できない支払金額と売上金額の不一致を検出: "
+                    f"未説明残差={day_unexplained_residual}円 "
+                    f"(既知差異で説明済み={day_known_k_explained_total}円)。"
+                    f"該当行: {unexplained_rows_desc}。店舗全体要確認。"
+                )
+            else:
+                logger.info(
+                    f"[{day}日] 支払金額と売上金額に行単位の差があるが、既知差異(K判定)の"
+                    f"価格履歴汚染額での説明(既知差異説明分={day_known_k_explained_total}円)、"
+                    "または複数行間の相殺により、日全体の残差は許容範囲内。"
+                    "店舗全体要確認には計上しない。"
+                )
 
     logger.info(f"物販取引を{len(all_transactions)}件抽出しました。")
     if all_reclassified_rows:
@@ -565,8 +602,9 @@ def main():
             continue
         store_wide_issues.append({
             "type": "payment_vs_revenue_mismatch",
-            "day": r["day"], "diff": r["diff"],
-            "detail": "支払金額(現金+カード+PayPay)と売上金額(税込累計)が一致しない",
+            "day": r["day"], "diff": r["unexplained_residual"],
+            "unexplained_rows": r["unexplained_rows"],
+            "detail": "支払金額(現金+カード+PayPay)と売上金額(最終売上)が既知差異では説明できない",
         })
     store_wide_pending_review_count = len(store_wide_issues)
     known_structural_discrepancy_count = len(known_structural_discrepancies)
@@ -761,8 +799,8 @@ def main():
     payment_reconciliation_path = reconciliation_out_dir / f"{store_id}_payment_reconciliation.csv"
     io_utils.write_csv(
         payment_reconciliation_path, payment_reconciliation_rows,
-        fieldnames=["day", "cash", "card", "paypay", "revenue_incl_tax", "diff",
-                    "contains_known_discrepancy", "counted_as_pending_review"],
+        fieldnames=["day", "raw_diff", "known_explained_difference", "unexplained_residual",
+                    "unexplained_rows", "counted_as_pending_review"],
     )
     logger.info(f"支払金額と売上金額の日別突合を出力: {payment_reconciliation_path}({len(payment_reconciliation_rows)}件)")
 
@@ -780,20 +818,22 @@ def main():
             "output_csv": str(inventory_recon_path),
         },
         "payment_reconciliation": {
-            # 支払金額(現金+カード+PayPay)と売上金額(税込累計)の日別突合。物販固有では
-            # なく店舗全体の照合(2026-09-16確定。product-audit-spec.md §25参照)。
-            # 既知差異(K判定)を含む日は、価格履歴汚染により機械的に差が生じるため
-            # pending_review(店舗全体要確認)には計上せず、診断データ(diagnostic_only)
-            # として別掲する(counted_as_pending_review=falseの行。要因未特定ではないため)。
+            # 支払金額(現金+カード+PayPay)と売上金額(最終売上X列)の行単位突合。物販固有
+            # ではなく店舗全体の照合(2026-09-16確定・行単位方式に修正。
+            # product-audit-spec.md §25参照)。日全体を丸ごと除外するのではなく、行ごとに
+            # 「その行の差額が、その行のK判定商品の価格履歴汚染額とちょうど一致するか」を
+            # 判定し、一致する行だけを既知差異で説明済みとして除外する。一致しない行
+            # (K判定の取引が無い行を含む)の差額を日ごとに合計した値が
+            # unexplained_residual。これが許容誤差を超える日だけを店舗全体要確認とする。
             "day_mismatch_count_total": len(payment_reconciliation_rows),
             "day_mismatch_count_pending_review": sum(
                 1 for r in payment_reconciliation_rows if r["counted_as_pending_review"]
             ),
-            "day_mismatch_count_diagnostic_only_known_discrepancy": sum(
+            "day_mismatch_count_fully_explained_by_known_discrepancy": sum(
                 1 for r in payment_reconciliation_rows if not r["counted_as_pending_review"]
             ),
-            "total_diff_pending_review": round(sum(
-                r["diff"] for r in payment_reconciliation_rows if r["counted_as_pending_review"]
+            "total_unexplained_residual": round(sum(
+                r["unexplained_residual"] for r in payment_reconciliation_rows if r["counted_as_pending_review"]
             ), 2),
             "matches": all(not r["counted_as_pending_review"] for r in payment_reconciliation_rows),
             "output_csv": str(payment_reconciliation_path),
