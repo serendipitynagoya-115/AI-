@@ -45,6 +45,7 @@ SEVERITY_BY_CLASSIFICATION = {
     "K": "既知差異",  # 別期間の価格履歴と一致する既知の表示価格変動(product-audit-spec.md §8)
     "S": "正常",      # 売上シェア(確定)。1商品を複数スタッフで分担入力(product-audit-spec.md §11)
     "N": "正常",      # 社内例外取引(通常非販売の備品等を原価のまま社内購入。product-audit-spec.md §18)
+    "V": "注意",      # 価格可変・非定番商品(セット料金等)。原価未確認の場合の既定値(product-audit-spec.md §24)
     "X": "重大エラー",  # 物販売上(AF列)自体が数式エラーで金額不明
 }
 
@@ -62,6 +63,7 @@ PRICE_STATUS_BY_CLASSIFICATION = {
     "K": "既知差異",
     "S": "価格確定",
     "N": "価格確定",
+    "V": "価格確定",  # 価格可変・非定番商品は「実際に記録された金額」自体を確定値として扱う
     "X": "価格要確認",
 }
 
@@ -573,6 +575,63 @@ def audit_transaction(
             cost_confirmed=False,
             price_status=PRICE_STATUS_BY_CLASSIFICATION["G"],
             severity=_escalate_severity(SEVERITY_BY_CLASSIFICATION["G"], "要確認" if flags else "正常"),
+            flags=flags,
+            purchaser_alias_note=alias_note,
+            purchaser_name_note=purchaser_name_note,
+            quantity_correction_note=quantity_correction_note,
+            share_marker_raw=note_raw,
+        )
+
+    if rec.get("variable_price_non_standard"):
+        # 価格可変・非定番商品(セット料金等)。商品種類・組み合わせが多数あり、頻繁に
+        # 販売しない非定番商品(補正下着等)を通常の商品マスターへ全商品登録せず、
+        # 日報に実際の販売金額を直接入力する運用(2026-09-15オーナー確認、
+        # product-audit-spec.md §24参照)。商品マスターの価格(regular_price_incl_tax、
+        # 多くは0円のプレースホルダー)との比較による価格異常判定(C・D)は行わず、
+        # 実際に記録された金額をそのまま実績売上として100%計上する。
+        # 「variable_price_non_standard」フラグを明示登録した商品名だけが対象で、
+        # 他の0円プレースホルダー商品(その他店販等)には一切適用しない。
+        cost_unit = rec.get("cost_price_excl_tax")
+        qty = quantity if quantity else 1
+        cost_confirmed = cost_unit is not None
+        if cost_confirmed:
+            cost_total = cost_unit * qty
+            profit = round(tax_excl_revenue - cost_total, 2)
+            margin = round(profit / tax_excl_revenue, 4) if tax_excl_revenue else None
+        else:
+            cost_total = None
+            profit = None
+            margin = None
+        detail = (
+            "価格可変・非定番商品(セット料金等)。商品マスターの価格との比較による"
+            "価格異常判定は行わず、実際に記録された金額をそのまま実績売上として計上する"
+            "(product-audit-spec.md §24参照)。"
+        )
+        detail += (
+            "原価は商品マスター(在庫帳含む)からは特定できないため「原価未確認」とする"
+            "(推測原価は適用しない)。" if not cost_confirmed else
+            f"原価は商品マスターの登録値({cost_unit}円/個)を使用する。"
+        )
+        flags = []
+        ld = _large_discount_flag(gross_incl_tax, discount_incl_tax)
+        if ld:
+            flags.append(ld)
+        if quantity_correction_note:
+            detail = f"{detail} / {quantity_correction_note}"
+        return ProductTransaction(
+            date=date, sheet_row=row, customer_name=customer_name,
+            purchaser_type=purchaser_type, product_status=determine_product_status(True),
+            product_name=product_name, quantity=quantity,
+            regular_price_incl_tax_expected=rec.get("regular_price_incl_tax"),
+            staff_price_incl_tax_expected=None,
+            actual_price_incl_tax=gross_incl_tax, discount_incl_tax=discount_incl_tax,
+            net_price_incl_tax=net_incl_tax, tax_excl_revenue=tax_excl_revenue,
+            cost_excl_tax_unit=cost_unit, cost_excl_tax_total=cost_total,
+            gross_profit=profit, gross_margin=margin,
+            classification="V", classification_detail=detail,
+            cost_confirmed=cost_confirmed,
+            price_status=PRICE_STATUS_BY_CLASSIFICATION["V"],
+            severity="正常" if cost_confirmed else SEVERITY_BY_CLASSIFICATION["V"],
             flags=flags,
             purchaser_alias_note=alias_note,
             purchaser_name_note=purchaser_name_note,

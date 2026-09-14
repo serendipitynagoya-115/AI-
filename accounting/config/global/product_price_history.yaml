@@ -676,11 +676,20 @@ products:
   regular_price_excl_tax: 0
   staff_price_incl_tax: null
   discount_rule: null
-  cost_price_excl_tax: 0
+  cost_price_excl_tax: null
+  variable_price_non_standard: true
   tax_category: 標準税率
   tax_rate: 1.1
   source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
-  notes: ''
+  notes: >
+    2026-09-15オーナー確認: 補正下着等、商品種類・組み合わせが多数あり頻繁に
+    販売しない非定番商品について、通常の商品マスターへ全商品を登録せず、
+    日報に実際の販売金額を直接入力する運用(product-audit-spec.md §24参照)。
+    regular_price_incl_tax=0円は「本来無料」ではなく「固定価格を持たない」ことを
+    示す。variable_price_non_standardフラグにより、価格比較による価格異常判定を
+    行わない特殊入力項目として扱う。cost_price_excl_taxは在庫帳(グラント/番号54)でも
+    単価・原価とも0円で仕入登録が無く特定できないため、推測原価を入れずnullのままとし、
+    販売のたびに原価未確認として扱う。
 - product_name: セット料金（軽減税率）
   effective_start_date: '2026-08-01'
   effective_end_date: '2026-08-31'
@@ -688,11 +697,14 @@ products:
   regular_price_excl_tax: 0
   staff_price_incl_tax: null
   discount_rule: null
-  cost_price_excl_tax: 0
+  cost_price_excl_tax: null
+  variable_price_non_standard: true
   tax_category: 軽減税率
   tax_rate: 1.08
   source: 日報①8月.xlsx 基本情報シート(2026-09-10/11取得、Google Driveミラー経由)
-  notes: ''
+  notes: >
+    セット料金（標準税率）と同一の運用(上記notes参照)。軽減税率区分の非定番商品
+    セット販売に用いる(2026-09-15オーナー確認)。
 - product_name: その他店販（標準税率）
   effective_start_date: '2026-08-01'
   effective_end_date: '2026-08-31'

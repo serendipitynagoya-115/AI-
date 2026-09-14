@@ -484,6 +484,12 @@ def main():
     cost_confirmed_txs = [t for t in all_transactions if t.cost_confirmed]
     cost_unconfirmed_txs = [t for t in all_transactions if not t.cost_confirmed]
 
+    # 価格可変・非定番商品(V判定。セット料金等。product-audit-spec.md §24参照)。
+    variable_price_txs = [t for t in all_transactions if t.classification == "V"]
+    variable_price_cost_confirmed_txs = [t for t in variable_price_txs if t.cost_confirmed]
+    variable_price_cost_unconfirmed_txs = [t for t in variable_price_txs if not t.cost_confirmed]
+    variable_price_path = reconciliation_out_dir / f"{store_id}_product_audit_variable_price_items.csv"
+
     # 監査結果の観点別件数(2026-09-15確定。product-audit-spec.md §20参照)。
     # 1取引が複数の観点に同時に該当しうるため、互いに排他的な分類ではなく、
     # それぞれ独立に集計する(例:価格異常かつ購入者不明、という取引もありうる)。
@@ -649,6 +655,19 @@ def main():
             "total_tax_excl_revenue": total_reclassified_all,
             "output_csv": str(category_reclass_path_out),
         },
+        "variable_price_items": {
+            # 価格可変・非定番商品(V判定。セット料金等。§24参照)。実際に記録された金額は
+            # 実績売上として100%計上済み(revenue_excl_tax.totalに含まれる)。原価が
+            # 商品マスターに登録されていない場合は「原価未確認」として別掲する。
+            # 商品内訳(セット内容)を構造化して確定する仕組みは現時点で無いため、
+            # product_breakdown_unconfirmed_countは常にcountと同数になる。
+            "count": len(variable_price_txs),
+            "revenue_excl_tax_total": sum_attr(variable_price_txs, "tax_excl_revenue"),
+            "cost_confirmed_count": len(variable_price_cost_confirmed_txs),
+            "cost_unconfirmed_count": len(variable_price_cost_unconfirmed_txs),
+            "product_breakdown_unconfirmed_count": len(variable_price_txs),
+            "output_csv": str(variable_price_path),
+        },
         "af54_reconciliation": {
             "sum_af54": round(total_af54, 2), "engine_total": round(total_engine, 2),
             "reclassified_total": total_reclassified_all,
@@ -789,6 +808,14 @@ def main():
     io_utils.write_csv(unconfirmed_path, unconfirmed_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
     logger.info(f"原価未確定取引一覧を出力: {unconfirmed_path}({len(unconfirmed_rows)}件)")
 
+    # 価格可変・非定番商品一覧(V判定。セット料金等。product-audit-spec.md §24参照)。
+    # 商品マスターの価格との比較による価格異常とはしないが、実績売上・原価確認状況を
+    # 別掲して追跡できるようにする。商品内訳(セット内容)は現時点で構造化して確定する
+    # 仕組みが無いため、V判定の取引は全件「商品内訳未確認」として扱う。
+    variable_price_rows = [r for r in detail_rows if r["classification"] == "V"]
+    io_utils.write_csv(variable_price_path, variable_price_rows, fieldnames=detail_rows[0].keys() if detail_rows else [])
+    logger.info(f"価格可変・非定番商品一覧を出力: {variable_price_path}({len(variable_price_rows)}件)")
+
     for cls in sorted(classification_counts):
         if cls == "K":
             logger.info(f"判定{cls}(既知差異): {classification_counts[cls]}件")
@@ -796,6 +823,8 @@ def main():
             logger.info(f"判定{cls}(売上シェア確定): {classification_counts[cls]}件")
         elif cls == "N":
             logger.info(f"判定{cls}(社内例外取引): {classification_counts[cls]}件")
+        elif cls == "V":
+            logger.info(f"判定{cls}(価格可変・非定番商品): {classification_counts[cls]}件")
         elif cls != "A":
             logger.warning(f"判定{cls}: {classification_counts[cls]}件")
 

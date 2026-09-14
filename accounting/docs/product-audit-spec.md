@@ -615,3 +615,33 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 ### エンジン設計上の注意
 
 `run_product_audit.py`・`product_audit.py`のJSON summary(`revenue_excl_tax`・`cost_excl_tax`・`gross_profit`・`gross_margin`等)は、実績売上・監査調整売上に相当する値のみを出力する。`apply_confirmed_status_overrides`(§15・§19)は`severity`・`classification`・`price_status`・`transaction_type`・`flags`・`classification_detail`のみを書き換え、`tax_excl_revenue`・`cost_excl_tax_total`・`gross_profit`等の集計対象金額は変更しない設計になっている(2026-09-15、緑店8/8プロテインの適用後に確認済み)。ルール基準参考額(`confirmed_status_overrides.yaml`のnoteに事実として記録される差異等)は、現時点でJSON summaryの独立フィールドとしては出力していない。将来、ルール基準参考額を`rule_reference_amount`のような独立フィールドとしてJSON summaryへ追加する場合も、`revenue_excl_tax`・`gross_profit`等の実績・監査調整系フィールドを上書き・加減算してはならない(集計ロジックを分離し、参考値は参考値のフィールドにのみ格納する)。
+
+## 24. 価格可変・非定番商品(V判定、2026-09-15確定)
+
+### 背景
+
+刈谷店8月の観察で、8/6行10「山下裕美」の「セット料金（標準税率）」×2(税込24,200円)を検出した。この商品は`product_price_history.yaml`に`regular_price_incl_tax: 0`(プレースホルダー)で登録されており、通常のC判定ロジック(実売価格が通常価格と一致しない)では「価格異常・要確認」として検出されてしまう。
+
+オーナー確認により、以下が判明した。
+
+- Serendipity-Jでは、補正下着等の非定番商品(商品種類・組み合わせが多数あり、頻繁に販売しない商品)について、全商品を通常の商品マスターへ登録していない。
+- 代わりに、日報では「セット料金（標準税率）」「セット料金（軽減税率）」という汎用の入力枠を使い、実際の販売金額をその都度直接入力する運用になっている(補正下着は複数商品の組み合わせで30万円・40万円等のセット販売になる場合もある)。
+- したがって、`regular_price_incl_tax: 0`は「本来無料」ではなく「固定価格を持たない(価格可変)」ことを示すプレースホルダーであり、実売価格との差だけをもって価格異常(C・D)としてはならない。
+- 一方で、セット料金だからといって原価まで0円としてPLに流してはならない。補正下着等には当然仕入原価がある。**売上確定と原価確定は独立に扱う**(§17・§23と同じ設計思想)。在庫帳(グラント/番号54・55)を確認したが、単価・原価とも0円で仕入登録が無く、実販売原価は特定できなかった(2026-09-15確認)。
+
+### 監査上の扱い
+
+`config/global/product_price_history.yaml`の該当商品レコードに`variable_price_non_standard: true`を明示登録した商品**だけ**を対象に、`audit_transaction`(`product_audit.py`)が以下の専用ロジックを適用する。
+
+- classification=「V(価格可変・非定番商品)」とし、商品マスターの`regular_price_incl_tax`との比較による価格異常判定(C・D)を行わない。price_status=「価格確定」とし、実際に記録された金額(`tax_excl_revenue`)をそのまま実績売上として100%計上する(§23の「実績売上」区分)。
+- 原価監査は価格監査と独立に行う。該当レコードの`cost_price_excl_tax`が登録されていれば(null以外)、その値を原価として使用し`cost_confirmed=True`とする。登録が無ければ(null)、`cost_confirmed=False`とし、`cost_excl_tax_total`・`gross_profit`・`gross_margin`は算出しない(推測原価・一律掛け率を自動適用しない)。管理会計上の物販粗利益(`gross_profit.management_accounting`)は原価不明でも売上を集計から除外しない設計(§9)のため、原価未確認のセット料金の売上は引き続き分子(売上)に含まれるが、原価は「商品特定済み粗利益」(`gross_profit.product_identified_confirmed`)の集計対象からは除外される。
+- severityは、原価が確定していれば「正常」、原価未確認であれば「注意」とする(要確認ではない。ルールとして既に確定済みの運用のため、取引のたびにオーナー確認を要求しない)。
+- 商品内訳(セット内容の具体的な商品構成)を構造化して確定する仕組みは現時点で無い。V判定の取引は`variable_price_items`(JSON summary)・`{store_id}_product_audit_variable_price_items.csv`に一覧され、`product_breakdown_unconfirmed_count`は常に該当件数と同数になる(商品内訳が個別に確認できた場合の登録方法は今後の課題とし、推測で埋めない)。
+
+### 適用範囲の限定(重要)
+
+`variable_price_non_standard`フラグは、商品名を明示指定したレコードにのみ設定する。**「価格0円のプレースホルダー商品全般」を対象にする条件分岐にはしない。** 「その他店販（標準税率）」等、フラグを立てていない0円プレースホルダー商品は、従来通り実売価格との比較でC・D判定の対象になる。2026-09-15、刈谷店・守山店・みよし店・緑店を再監査し、セット料金以外の取引の判定件数・実績売上・原価・粗利益が一切変化しないことを確認済みである。
+
+### 刈谷店8月での適用結果
+
+8/6行10のセット料金(税込24,200円・税抜22,000円)は、classification=V・severity=注意・cost_confirmed=Falseとなり、価格異常(C・D)からは除外された。実績物販売上(254,328.85円)は変化せず(元々全額が集計対象だったため)、物販原価(130,657.50円)・管理会計上の物販粗利益(123,671.35円)も変化しない。一方、商品特定済み粗利益(`product_identified_confirmed`)はセット料金の売上22,000円を除外した101,671.34円となり、原価不明の売上を含まない厳格な指標として区別される。
