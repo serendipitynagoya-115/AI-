@@ -997,3 +997,47 @@ def detect_and_apply_shared_sales(transactions: list[ProductTransaction]) -> lis
             )
 
     return groups_summary
+
+
+def load_confirmed_manual_share_groups(path: Path) -> list[dict]:
+    """現場確認に基づく手動確定・売上シェアグループマスターを読み込む(2026-09-15確定、
+    product-audit-spec.md §21参照)。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    return doc.get("groups", []) or []
+
+
+def apply_confirmed_manual_share_groups(
+    transactions: list[ProductTransaction], *, store_id: str, year_month: str, groups: list[dict],
+) -> list[dict]:
+    """現場確認により確定した売上シェアグループを適用する(in-place)。
+
+    detect_and_apply_shared_sales(§11)の自動検出は「1商品の商品あり行+その商品の
+    無行」という単純な組み合わせしか扱えない。1つの「無」行が複数の異なる商品の
+    売上シェアを同時に受け止めているケース等、自動検出の対象外だが現場確認により
+    確定した組み合わせをここで明示的に処理する。_apply_confirmed_share と同じ
+    ロジックを再利用するため、確定済み売上シェア(§11)と同様にclassification="S"・
+    severity="正常"となり、「無」側の行のみ原価・数量を0にする(商品あり側の行は
+    日報記載どおりの数量・原価をそのまま使うため、二重計上は発生しない)。
+
+    グループを構成する行が(存在しない行番号の指定などにより)全て見つからない
+    場合は、安全側に倒して何も適用しない。戻り値は適用したグループのサマリ一覧。
+    """
+    by_key = {(t.date, t.sheet_row): t for t in transactions}
+    summaries = []
+    for g in groups:
+        if g["store_id"] != store_id or g["year_month"] != year_month:
+            continue
+        date_key = g["date"]
+        group_members = [by_key[(date_key, r)] for r in g["rows"] if (date_key, r) in by_key]
+        if len(group_members) != len(g["rows"]):
+            continue
+        share_total = round(sum(t.actual_price_incl_tax for t in group_members), 2)
+        summary = _apply_confirmed_share(group_members, share_total, g["linked_product"])
+        note = (g.get("note") or "").strip()
+        if note:
+            for t in group_members:
+                t.classification_detail = t.classification_detail + " / " + note
+        summaries.append(summary)
+    return summaries

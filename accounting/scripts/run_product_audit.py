@@ -74,6 +74,10 @@ def parse_args():
         "--exception-transactions",
         default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_exception_transactions.yaml"),
     )
+    p.add_argument(
+        "--manual-share-groups",
+        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_manual_share_groups.yaml"),
+    )
     return p.parse_args()
 
 
@@ -166,6 +170,7 @@ def main():
     status_overrides_path = Path(args.status_overrides)
     quantity_corrections_path = Path(args.quantity_corrections)
     exception_transactions_path = Path(args.exception_transactions)
+    manual_share_groups_path = Path(args.manual_share_groups)
     price_history = product_audit.load_price_history(price_history_path)
     staff_price_rules = product_audit.load_staff_price_rules(staff_rules_path)
     staff_aliases = product_audit.load_staff_aliases(staff_aliases_path) if staff_aliases_path.exists() else {}
@@ -189,6 +194,10 @@ def main():
         product_audit.load_confirmed_exception_transactions(exception_transactions_path)
         if exception_transactions_path.exists() else {}
     )
+    manual_share_groups = (
+        product_audit.load_confirmed_manual_share_groups(manual_share_groups_path)
+        if manual_share_groups_path.exists() else []
+    )
     logger.info(f"価格履歴マスター読み込み: {len(price_history)}商品 ({price_history_path})")
     logger.info(f"スタッフ価格履歴マスター読み込み: {len(staff_price_rules)}商品 ({staff_rules_path})")
     logger.info(f"スタッフ・社内購入者の別名マスター読み込み: {len(staff_aliases)}件 ({staff_aliases_path})")
@@ -197,6 +206,7 @@ def main():
     logger.info(f"確定済みステータス上書きマスター読み込み: {len(status_overrides)}件 ({status_overrides_path})")
     logger.info(f"確定済み数量修正マスター読み込み: {len(quantity_corrections)}件 ({quantity_corrections_path})")
     logger.info(f"確定済み社内例外取引マスター読み込み: {len(exception_transactions)}件 ({exception_transactions_path})")
+    logger.info(f"現場確認に基づく手動確定・売上シェアグループ読み込み: {len(manual_share_groups)}件 ({manual_share_groups_path})")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -316,6 +326,17 @@ def main():
     # 該当取引のclassification・severity等のみ調整する(2026-09-15確定。
     # product-audit-spec.md §11参照)。
     share_groups = product_audit.detect_and_apply_shared_sales(all_transactions)
+
+    # 現場確認(スタッフ回答等)に基づく手動確定・売上シェアグループ(§21)。自動検出
+    # (1商品の商品あり行+その商品の無行)では表現できない、1つの無行が複数商品の
+    # 売上シェアを同時に受け止めるケース等に使う。
+    manual_groups_applied = product_audit.apply_confirmed_manual_share_groups(
+        all_transactions, store_id=store_id, year_month=year_month, groups=manual_share_groups,
+    )
+    if manual_groups_applied:
+        logger.info(f"手動確定・売上シェアグループを適用: {len(manual_groups_applied)}グループ")
+    share_groups = share_groups + manual_groups_applied
+
     confirmed_share_groups = [g for g in share_groups if g["transaction_type"] == "shared_sale"]
     candidate_share_groups = [g for g in share_groups if g["transaction_type"] == "shared_sale_candidate"]
     confirmed_2way_groups = [g for g in confirmed_share_groups if g["share_count"] == 2]
