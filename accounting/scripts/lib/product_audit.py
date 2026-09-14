@@ -1058,6 +1058,21 @@ def detect_and_apply_shared_sales(transactions: list[ProductTransaction]) -> lis
     return groups_summary
 
 
+def load_confirmed_structural_discrepancies(path: Path) -> list[dict]:
+    """確定済み「既知構造差異」マスターを読み込む(2026-09-16確定、
+    product-audit-spec.md §26参照)。
+
+    原因が既に特定済みだが、日報・月報集計の構造上の理由により解消できない
+    (または意図的に解消しない)差異を登録する。店舗全体売上照合等で検出された
+    差額が、ここに登録された既知の差額と一致する場合、「原因不明の店舗全体要確認」
+    ではなく「既知構造差異」として区別する。差異そのものは消さず、日報実績・
+    月報集計・差額・原因はすべて保持したまま扱う。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    return doc.get("discrepancies", []) or []
+
+
 def load_confirmed_manual_share_groups(path: Path) -> list[dict]:
     """現場確認に基づく手動確定・売上シェアグループマスターを読み込む(2026-09-15確定、
     product-audit-spec.md §21参照)。

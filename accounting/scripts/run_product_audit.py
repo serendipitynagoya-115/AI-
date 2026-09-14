@@ -66,6 +66,7 @@ def default_config_paths(store_id: str, year_month: str) -> dict:
         "quantity_corrections": store_month_dir / "confirmed_quantity_corrections.yaml",
         "exception_transactions": store_month_dir / "confirmed_exception_transactions.yaml",
         "manual_share_groups": store_month_dir / "confirmed_manual_share_groups.yaml",
+        "structural_discrepancies": store_month_dir / "confirmed_structural_discrepancies.yaml",
     }
 
 
@@ -88,6 +89,7 @@ def parse_args():
     p.add_argument("--quantity-corrections", default=None)
     p.add_argument("--exception-transactions", default=None)
     p.add_argument("--manual-share-groups", default=None)
+    p.add_argument("--structural-discrepancies", default=None)
     args = p.parse_args()
 
     defaults = default_config_paths(args.store_id, args.year_month)
@@ -188,6 +190,7 @@ def main():
     quantity_corrections_path = Path(args.quantity_corrections)
     exception_transactions_path = Path(args.exception_transactions)
     manual_share_groups_path = Path(args.manual_share_groups)
+    structural_discrepancies_path = Path(args.structural_discrepancies)
     price_history = product_audit.load_price_history(price_history_path)
     staff_price_rules = product_audit.load_staff_price_rules(staff_rules_path)
     staff_aliases = product_audit.load_staff_aliases(staff_aliases_path) if staff_aliases_path.exists() else {}
@@ -215,6 +218,10 @@ def main():
         product_audit.load_confirmed_manual_share_groups(manual_share_groups_path)
         if manual_share_groups_path.exists() else []
     )
+    structural_discrepancies = (
+        product_audit.load_confirmed_structural_discrepancies(structural_discrepancies_path)
+        if structural_discrepancies_path.exists() else []
+    )
     logger.info(f"価格履歴マスター読み込み: {len(price_history)}商品 ({price_history_path})")
     logger.info(f"スタッフ価格履歴マスター読み込み: {len(staff_price_rules)}商品 ({staff_rules_path})")
     logger.info(f"スタッフ・社内購入者の別名マスター読み込み: {len(staff_aliases)}件 ({staff_aliases_path})")
@@ -224,6 +231,7 @@ def main():
     logger.info(f"確定済み数量修正マスター読み込み: {len(quantity_corrections)}件 ({quantity_corrections_path})")
     logger.info(f"確定済み社内例外取引マスター読み込み: {len(exception_transactions)}件 ({exception_transactions_path})")
     logger.info(f"現場確認に基づく手動確定・売上シェアグループ読み込み: {len(manual_share_groups)}件 ({manual_share_groups_path})")
+    logger.info(f"確定済み既知構造差異マスター読み込み: {len(structural_discrepancies)}件 ({structural_discrepancies_path})")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -494,32 +502,64 @@ def main():
             f"施術・既存売上(区分振替後)={ticket_treatment_sales_after_reclassification}円 "
             f"(差={store_total_check_diff})"
         )
-        if abs(store_total_check_diff) >= 1.0:
-            logger.error(
-                "店舗全体売上と、物販売上+施術・既存売上の合計が一致しません。"
-                "区分振替の反映漏れの可能性があるため要確認です。"
-            )
     else:
         store_total_check_diff = None
         logger.error("月報集計シートから店舗全体の実売実績を読み取れませんでした(要確認)。")
 
+    # 既知構造差異(known_structural_discrepancies)と店舗全体要確認
+    # (store_wide_pending_review)を区別する(2026-09-16確定。product-audit-spec.md
+    # §26参照)。原因が既に特定済みで、confirmed_structural_discrepancies.yamlに
+    # 明示登録された差額と一致する場合は「既知構造差異」とし、「原因不明の
+    # 店舗全体要確認」には計上しない。差異そのものは消さず、日報実績・月報集計・
+    # 差額・原因はすべて保持したまま別区分で記録する。推測で一致させず、
+    # オーナー確認済みの登録だけを既知構造差異として扱う。
+    def _match_structural_discrepancy(check_type, diff):
+        for d in structural_discrepancies:
+            if d.get("store_id") != store_id or d.get("year_month") != year_month:
+                continue
+            if d.get("check") != check_type:
+                continue
+            tolerance = d.get("tolerance_yen", 1.0)
+            if diff is not None and abs(diff - d["expected_diff"]) <= tolerance:
+                return d
+        return None
+
     # 店舗全体要確認(store_wide_pending_review): 個々の物販取引(商品監査)には
-    # 紐づかない、店舗全体レベルの照合エラーをまとめて集計する(2026-09-16確定。
-    # product-audit-spec.md §25参照)。「商品監査要確認」(severity_counts["要確認"])
-    # とは別軸であり、どちらか一方が0件でも、もう一方が残っていれば
-    # 店舗監査全体を「完全解決」とは扱わない。
+    # 紐づかない、店舗全体レベルの照合エラーのうち、原因が未特定のものだけを
+    # 集計する(2026-09-16確定。product-audit-spec.md §25参照)。「商品監査要確認」
+    # (severity_counts["要確認"])とは別軸であり、どちらか一方が0件でも、
+    # もう一方(既知構造差異を除く)が残っていれば店舗監査全体を「完全解決」とは扱わない。
     store_wide_issues = []
+    known_structural_discrepancies = []
     if store_total_actual_sales is None:
         store_wide_issues.append({
             "type": "store_total_actual_sales_unreadable",
             "detail": "月報集計シートから店舗全体の実売実績を読み取れなかった",
         })
     elif abs(store_total_check_diff) >= 1.0:
-        store_wide_issues.append({
-            "type": "store_total_actual_sales_mismatch",
-            "diff": store_total_check_diff,
-            "detail": "店舗全体売上と、物販売上+施術・既存売上の合計が一致しない",
-        })
+        matched = _match_structural_discrepancy("store_total_actual_sales", store_total_check_diff)
+        if matched is not None:
+            known_structural_discrepancies.append({
+                "type": matched.get("type", "store_total_actual_sales_mismatch"),
+                "check": "store_total_actual_sales",
+                "diff": store_total_check_diff,
+                "cause": matched["cause"],
+                "detail": "店舗全体売上と、物販売上+施術・既存売上の合計が一致しないが、原因は特定済み",
+            })
+            logger.info(
+                f"店舗全体売上と物販売上+施術・既存売上の合計が一致しません(差={store_total_check_diff})。"
+                f"原因は特定済みのため既知構造差異として記録します: {matched['cause'].strip()}"
+            )
+        else:
+            store_wide_issues.append({
+                "type": "store_total_actual_sales_mismatch",
+                "diff": store_total_check_diff,
+                "detail": "店舗全体売上と、物販売上+施術・既存売上の合計が一致しない",
+            })
+            logger.error(
+                "店舗全体売上と、物販売上+施術・既存売上の合計が一致しません。"
+                "区分振替の反映漏れの可能性があるため要確認です。"
+            )
     for r in payment_reconciliation_rows:
         if not r["counted_as_pending_review"]:
             continue
@@ -529,6 +569,7 @@ def main():
             "detail": "支払金額(現金+カード+PayPay)と売上金額(税込累計)が一致しない",
         })
     store_wide_pending_review_count = len(store_wide_issues)
+    known_structural_discrepancy_count = len(known_structural_discrepancies)
 
     # --- 集計 ---
     classification_counts = {}
@@ -609,7 +650,8 @@ def main():
     )
     logger.info(
         f"要確認件数(分離): 商品監査要確認={severity_counts['要確認']}件 / "
-        f"店舗全体要確認={store_wide_pending_review_count}件"
+        f"店舗全体要確認={store_wide_pending_review_count}件 / "
+        f"既知構造差異={known_structural_discrepancy_count}件"
     )
 
     # 調査2: 「購入者区分」(スタッフ/社内購入/一般顧客/購入者不明)と「商品特定状態」
@@ -756,14 +798,19 @@ def main():
             "matches": all(not r["counted_as_pending_review"] for r in payment_reconciliation_rows),
             "output_csv": str(payment_reconciliation_path),
         },
-        # 「商品監査要確認」(個々の物販取引に紐づくseverity="要確認")と「店舗全体要確認」
-        # (店舗全体売上照合・支払金額照合等、個々の取引に紐づかない照合エラー)を明示的に
-        # 分離する(2026-09-16確定。product-audit-spec.md §25参照)。どちらか一方が0件でも、
-        # もう一方が残っていれば店舗監査全体を「完全解決」とは扱わない。
+        # 「商品監査要確認」(個々の物販取引に紐づくseverity="要確認")、「店舗全体要確認」
+        # (店舗全体売上照合・支払金額照合等、個々の取引に紐づかず原因も未特定の照合エラー)、
+        # 「既知構造差異」(原因は特定済みだが構造上解消できない/意図的に解消しない差異、
+        # confirmed_structural_discrepancies.yamlに登録)を明示的に分離する
+        # (2026-09-16確定。product-audit-spec.md §25・§26参照)。既知構造差異は
+        # fully_resolvedの判定に含めない(原因不明の「要確認」とは別の状態のため)が、
+        # 差異の金額・原因はknown_structural_discrepanciesにそのまま保持する。
         "pending_review_summary": {
             "product_audit_pending_review_count": severity_counts["要確認"],
             "store_wide_pending_review_count": store_wide_pending_review_count,
             "store_wide_issues": store_wide_issues,
+            "known_structural_discrepancy_count": known_structural_discrepancy_count,
+            "known_structural_discrepancies": known_structural_discrepancies,
             "fully_resolved": severity_counts["要確認"] == 0 and store_wide_pending_review_count == 0,
         },
         "shared_sales": {
