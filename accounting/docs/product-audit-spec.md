@@ -6,7 +6,7 @@ Serendipity-J の物販(商品販売)取引を、価格改定をまたいでも�
 
 商品価格・仕入原価は将来変更されることがある(例:2026-09-01付でドクターセレン(マグネシウム)の通常価格・仕入原価が改定される)。**現在の商品マスター価格だけを使って過去取引を監査すると、価格改定前の正常な取引が誤ってエラー判定されることがある。** これを防ぐため、物販監査は必ず「取引日時点で有効だった価格・原価」を使用する。
 
-## 1. 価格履歴マスター(`accounting/config/product_price_history.yaml`)
+## 1. 価格履歴マスター(`accounting/config/global/product_price_history.yaml`)
 
 商品マスターは「現在値だけ」を持つのではなく、価格・原価の履歴を商品ごとに管理する。各レコードは最低限、以下を持つ。
 
@@ -23,7 +23,7 @@ Serendipity-J の物販(商品販売)取引を、価格改定をまたいでも�
 
 **価格履歴レコードが存在しない(商品名自体が無い、またはレコードはあるが取引日をカバーしていない)場合は、推測で価格を補わず「G. 価格履歴不足」として要確認にする。**
 
-## 2. スタッフ価格(社割)履歴マスター(`accounting/config/staff_price_rules.yaml`)
+## 2. スタッフ価格(社割)履歴マスター(`accounting/config/global/staff_price_rules.yaml`)
 
 社割価格についても、通常価格と同様に期間付きの履歴を持つ。商品ごとに、次のいずれかの方式で定義する。
 
@@ -104,11 +104,12 @@ Serendipity-J の物販(商品販売)取引を、価格改定をまたいでも�
 
 ## 5. 6店舗共通での利用について
 
-このマスター・ロジックは、店舗名や商品名をハードコードしていない(店舗ごとの `product_price_history.yaml` / `staff_price_rules.yaml` を用意すれば、同じ監査ロジック(`accounting/scripts/lib/product_audit.py`)がそのまま使える設計)。ただし、以下は店舗ごとに個別に確認・整備する必要がある。
+このマスター・ロジックは、店舗名や商品名をハードコードしていない設計であり、`accounting/scripts/lib/product_audit.py`の監査ロジック自体は全店舗で共通のまま使える。設定ファイルの店舗間の分離については§22(設定ファイルの3階層構成)を参照。
 
-- 各店舗の商品マスター(価格・原価)は店舗ごとに異なりうるため、店舗ごとに `product_price_history.yaml` を作成する。
-- 担当スタッフ名簿も店舗ごとに異なるため、購入者区分の判定に使うスタッフ名リストは店舗ごとの日報から取得する。
-- 社割ルール(明示価格・割合方式とも)が店舗間で共通なのか店舗ごとに異なるのか(例:全店共通の社内規定か、店舗裁量か)は未確認。共通であれば `staff_price_rules.yaml` を全店共有マスターとして1つにまとめられる可能性がある。
+2026-09-15、みよし店8月の監査で、商品マスター(`global/product_price_history.yaml`)・社割ルール(`global/staff_price_rules.yaml`)が守山店と完全に同一の内容(商品名・価格・原価・社割ルールいずれも一致)であることを確認した。したがって、この2つは店舗ごとに個別管理するのではなく、**全店舗共通のglobal設定として1つにまとめる。** 担当スタッフ名簿は店舗ごとに異なる(日報`基本情報`シートから店舗ごとに取得する。ハードコードしない)。
+
+- 商品マスター(価格・原価履歴)・社割ルールは全店舗共通(global)。ただし、実際に他店舗でも同一であることは、その店舗のデータで確認できてから確定させる(推測で他店舗にも同一と決めつけない)。
+- 担当スタッフ名簿は店舗ごとに異なるため、購入者区分の判定に使うスタッフ名リストは店舗ごとの日報`基本情報`シートから都度取得する(ハードコードしない)。
 - 端数処理ルールは、確認でき次第、全店共通のルールとして `accounting/docs/product-audit-spec.md`(本ファイル)に明文化する。
 
 ## 6. データ鮮度チェック(正式ルール・2026-09-11確定)
@@ -222,7 +223,7 @@ Claude Codeによる読み取り専用解析(data_only相当のキャッシュ�
 
 ### 購入者別名(staff_aliases.yaml)
 
-日報の「購入者」欄が、担当スタッフ名簿(基本情報シート)と完全一致しない表記(ひらがな表記、旧姓、オーナーの通称等)で記録され、購入者区分が誤って「一般顧客」「購入者不明」になるケースがある。`accounting/config/staff_aliases.yaml`に、別名(alias)と正式氏名(formal_name)の対応をオーナー確認済みのものだけ登録し、購入者区分の判定(`classify_purchaser`)で別名一致も反映する。別名解決後の正式氏名が担当スタッフ名簿に該当すれば「スタッフ」、該当しなければ「社内購入」とする(§10参照)。推測で別名を追加しない。
+日報の「購入者」欄が、担当スタッフ名簿(基本情報シート)と完全一致しない表記(ひらがな表記、旧姓、オーナーの通称等)で記録され、購入者区分が誤って「一般顧客」「購入者不明」になるケースがある。`accounting/config/stores/{store_id}/staff_aliases.yaml`に、別名(alias)と正式氏名(formal_name)の対応をオーナー確認済みのものだけ登録し、購入者区分の判定(`classify_purchaser`)で別名一致も反映する。別名解決後の正式氏名が担当スタッフ名簿に該当すれば「スタッフ」、該当しなければ「社内購入」とする(§10参照)。推測で別名を追加しない。
 
 ## 10. 購入者区分・商品特定状態の分離、管理会計上の物販粗利益(2026-09-14確定)
 
@@ -303,7 +304,7 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 
 ### 確定方法(推測で全件に適用しない)
 
-この慣習が実際にどの範囲まで適用されているかを機械的に断定するのはリスクが高い(空欄=本当に購入者不明な一見客のケースも多数ある)。このため、`accounting/config/confirmed_purchaser_blocks.yaml`に、**オーナーが日報原本を確認して確定した範囲だけ**を明示登録する(`store_id`・`year_month`・`date`・`start_row`・`end_row`・`purchaser_name`)。範囲外の空欄行は、従来通り「購入者不明」のまま扱う。
+この慣習が実際にどの範囲まで適用されているかを機械的に断定するのはリスクが高い(空欄=本当に購入者不明な一見客のケースも多数ある)。このため、`accounting/config/stores/{store_id}/{year_month}/confirmed_purchaser_blocks.yaml`に、**オーナーが日報原本を確認して確定した範囲だけ**を明示登録する(`store_id`・`year_month`・`date`・`start_row`・`end_row`・`purchaser_name`)。範囲外の空欄行は、従来通り「購入者不明」のまま扱う。
 
 `apply_confirmed_purchaser_blocks`(`product_audit.py`)が、登録済み範囲内で顧客名が空欄の行にだけ起点行の購入者名を適用する(既に顧客名が入力されている行は上書きしない)。適用した行には、`purchaser_name_note`に適用根拠を記録する。
 
@@ -344,7 +345,7 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 
 ### 確定方法
 
-`accounting/config/confirmed_category_reclassifications.yaml`に、オーナーが日報原本を確認して確定した行(`store_id`・`year_month`・`date`・`row`・`tax_excl_revenue`・`reclassified_as`・`reason`)だけを明示登録する。登録された行は、物販監査(売上・原価・数量集計、価格・商品不明判定、売上シェア判定のいずれも)から完全に除外し、`{store_id}_category_reclassifications.csv`に施術/既存側への振替として出力する。原価はこの行に付けない(物販の商品原価としては扱わない)。
+`accounting/config/stores/{store_id}/{year_month}/confirmed_category_reclassifications.yaml`に、オーナーが日報原本を確認して確定した行(`store_id`・`year_month`・`date`・`row`・`tax_excl_revenue`・`reclassified_as`・`reason`)だけを明示登録する。登録された行は、物販監査(売上・原価・数量集計、価格・商品不明判定、売上シェア判定のいずれも)から完全に除外し、`{store_id}_category_reclassifications.csv`に施術/既存側への振替として出力する。原価はこの行に付けない(物販の商品原価としては扱わない)。
 
 ### AF54突合への影響
 
@@ -354,7 +355,7 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 
 事実関係(購入者・原価等)はオーナー確認により確定しているが、価格履歴・社割ルールマスターへの正式登録がまだ済んでいないため、classificationを「A(正常)」に確定できない取引がある(例:守山8月8/11のコントアBクリーム。小川麻菜本人のスタッフ購入と確定済みだが、40%OFF相当の値引が正式な社割ルールとしてマスター登録されるかは未確定)。
 
-このような取引は、`accounting/config/confirmed_status_overrides.yaml`に明示登録し、`apply_confirmed_status_overrides`によりseverityのみ「分類保留」に変更する。classification(価格・原価判定の区分)自体は変更しない(推測で価格・原価を確定しない)。「分類保留」は「正常」「既知差異」と同様、要確認一覧・重大エラーには含めない。
+このような取引は、`accounting/config/stores/{store_id}/{year_month}/confirmed_status_overrides.yaml`に明示登録し、`apply_confirmed_status_overrides`によりseverityのみ「分類保留」に変更する。classification(価格・原価判定の区分)自体は変更しない(推測で価格・原価を確定しない)。「分類保留」は「正常」「既知差異」と同様、要確認一覧・重大エラーには含めない。
 
 推測で追加せず、オーナーが日報原本を確認して確定した行だけを登録すること。対象商品を特定の社割ルール(例:○%OFF)としてマスター登録するかどうかは、このステータス上書きとは別に、マスターデータ整備の判断として行う(自動では確定しない)。
 
@@ -368,7 +369,7 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 
 ### 適用方法(商品ごとに明示登録)
 
-この丸め差は商品・社割ルールごとに事情が異なりうるため、全商品に一律の許容範囲を広げるのではなく、`accounting/config/staff_price_rules.yaml`の該当レコードに`confirmed_rounding_tolerance_yen`(円)を明示登録した商品にだけ適用する。登録されたレコードについては、実売価格(値引前・値引後いずれか)と正式なスタッフ価格の差がこの許容範囲内であれば、「B(丸め差の可能性・注意)」ではなく「A(正常)」として扱う。正式なスタッフ価格(登録値)を優先して使用し、割引率から都度再計算しない。
+この丸め差は商品・社割ルールごとに事情が異なりうるため、全商品に一律の許容範囲を広げるのではなく、`accounting/config/global/staff_price_rules.yaml`の該当レコードに`confirmed_rounding_tolerance_yen`(円)を明示登録した商品にだけ適用する。登録されたレコードについては、実売価格(値引前・値引後いずれか)と正式なスタッフ価格の差がこの許容範囲内であれば、「B(丸め差の可能性・注意)」ではなく「A(正常)」として扱う。正式なスタッフ価格(登録値)を優先して使用し、割引率から都度再計算しない。
 
 推測で全商品・全パーセンテージに適用せず、オーナーが商品ごとに確認・確定したものだけを登録すること。`confirmed_rounding_tolerance_yen`が無い商品は、従来通り`ROUNDING_TOLERANCE_YEN`(暫定許容範囲)に基づく「B(注意)」のまま扱う。
 
@@ -406,7 +407,7 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 
 ### 確定方法・監査上の扱い
 
-`accounting/config/confirmed_exception_transactions.yaml`に、オーナー・スタッフ確認(レシート確認等)により確定した行(`store_id`・`year_month`・`date`・`row`・`product_name`・`purchaser_type_override`・`exception_type`・`note`)だけを明示登録する。`apply_confirmed_exception_transactions`(`product_audit.py`)が該当行に適用し、以下のように確定する。
+`accounting/config/stores/{store_id}/{year_month}/confirmed_exception_transactions.yaml`に、オーナー・スタッフ確認(レシート確認等)により確定した行(`store_id`・`year_month`・`date`・`row`・`product_name`・`purchaser_type_override`・`exception_type`・`note`)だけを明示登録する。`apply_confirmed_exception_transactions`(`product_audit.py`)が該当行に適用し、以下のように確定する。
 
 - `classification`を「N(社内例外取引)」とし、severityを「正常」とする。「商品マスターに存在しない」「原価マスターに存在しない」ことを異常扱いしない。
 - 商品名を確定した実際の商品名に更新し、`product_status`を「商品特定済み」とする。
@@ -431,7 +432,7 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 
 ### 確定済みステータス上書きの拡張(§15の拡張)
 
-`accounting/config/confirmed_status_overrides.yaml`は、通常はseverityのみを「分類保留」に変更する(§15)。現場確認により価格異常自体が解消したと確定できたが、ファイル内に対応する行が見当たらず自動検出が使えないケースに限り、以下を追加で指定してclassification自体を上書きしてよい。
+`accounting/config/stores/{store_id}/{year_month}/confirmed_status_overrides.yaml`は、通常はseverityのみを「分類保留」に変更する(§15)。現場確認により価格異常自体が解消したと確定できたが、ファイル内に対応する行が見当たらず自動検出が使えないケースに限り、以下を追加で指定してclassification自体を上書きしてよい。
 
 - `new_classification`:確定した区分(例:`S`)
 - `new_price_status`:対応する価格監査ステータス
@@ -442,7 +443,7 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 
 ### 確定済み数量修正(`confirmed_quantity_corrections.yaml`)
 
-数量そのものが日報の入力誤りだったと現場確認で確定した場合は、`accounting/config/confirmed_quantity_corrections.yaml`に明示登録する。`apply_confirmed_quantity_corrections`(`product_audit.py`)が、監査前の生データ行の数量を修正してから`audit_transaction`を実行するため、価格一致判定・原価計算が正しい数量ベースで自動的に再計算される(元Excelは変更しない)。**数量の見た目が規定価格と合わない場合でも、それが「数量の入力誤り」なのか「売上シェアによる金額分割」なのかを取り違えないよう、現場確認の内容を注意深く確認してから、どちらの仕組みを使うか判断すること**(2026-09-15、守山8月8/17でこの取り違えが実際に発生し、訂正した)。
+数量そのものが日報の入力誤りだったと現場確認で確定した場合は、`accounting/config/stores/{store_id}/{year_month}/confirmed_quantity_corrections.yaml`に明示登録する。`apply_confirmed_quantity_corrections`(`product_audit.py`)が、監査前の生データ行の数量を修正してから`audit_transaction`を実行するため、価格一致判定・原価計算が正しい数量ベースで自動的に再計算される(元Excelは変更しない)。**数量の見た目が規定価格と合わない場合でも、それが「数量の入力誤り」なのか「売上シェアによる金額分割」なのかを取り違えないよう、現場確認の内容を注意深く確認してから、どちらの仕組みを使うか判断すること**(2026-09-15、守山8月8/17でこの取り違えが実際に発生し、訂正した)。
 
 ### 在庫帳突合への影響(既知の副作用)
 
@@ -488,7 +489,7 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 
 `detect_and_apply_shared_sales`(§11)の自動検出は、「1商品の商品あり行+その商品の無行(1〜2行)」という組み合わせしか扱えない。このケースは、1つの「無」行(行8)が**2つの異なる商品**(有機ほうじ茶パウダー・プロテイン)の売上シェアを同時に受け止めており、自動検出のモデルに当てはまらないため、自動では検出されない(検出されないこと自体は正しい挙動であり、バグではない)。
 
-このような、現場確認により確定したが自動検出の対象外となるグループは、`accounting/config/confirmed_manual_share_groups.yaml`に明示登録する。`apply_confirmed_manual_share_groups`(`product_audit.py`)は、登録されたグループに含まれる全行が実際に見つかった場合にのみ、`_apply_confirmed_share`(§11で使用する確定処理と同一ロジック)を適用する。
+このような、現場確認により確定したが自動検出の対象外となるグループは、`accounting/config/stores/{store_id}/{year_month}/confirmed_manual_share_groups.yaml`に明示登録する。`apply_confirmed_manual_share_groups`(`product_audit.py`)は、登録されたグループに含まれる全行が実際に見つかった場合にのみ、`_apply_confirmed_share`(§11で使用する確定処理と同一ロジック)を適用する。
 
 - 商品あり側の行(行6・行7)は、日報記載どおりの数量・原価をそのまま使う(二重計上しない)。行7の原価は、実販売数量2個分(3,950円/個×2個=7,900円)として計上する。
 - 「無」側の行(行8)は、商品特定済み・原価0円・数量0として扱う(原価・数量の二重計上を防ぐ)。
@@ -504,3 +505,43 @@ I列の読み取りは店舗・月を問わず共通の仕組みとして実装�
 - プロテインの原価を1個分(3,950円)としていた計算 → 撤回(実販売数量2個分、7,900円に戻る)。
 
 とこちゃんベルト(§18)の社内例外取引は今回の訂正と独立しており、変更しない(税抜原価4,500円を計上)。
+
+## 22. 設定ファイルの3階層構成(2026-09-15確定)
+
+### 背景
+
+§11〜§21で追加した確定事実(売上シェア・区分振替・社内例外取引・購入者ブロック・ステータス上書き・数量修正)は、いずれも守山8月の実データから確認した事実であり、`accounting/config/`直下にフラットに置かれていた。この構成のまま他店舗(みよし等)を監査すると、守山固有の確定事実(例:8/17の売上シェア、とこちゃんベルト、辻明子の連続購入ブロック)が、無関係な店舗・月にも無条件で読み込まれてしまう。2026-09-15、みよし店8月の初回監査に着手する際にこの問題を認識し、設定ファイルを3階層に分離した。
+
+### 3階層
+
+1. **global**(`accounting/config/global/`):全店舗・全期間に共通して適用するルール。店舗名・年月をハードコードしない。
+   - `product_price_history.yaml`:商品マスター(価格・原価の履歴)。マグネシウムの2026-08/2026-09価格切り替えを含む(§8)。
+   - `staff_price_rules.yaml`:正式なスタッフ社割ルール。確定済み丸め差(`confirmed_rounding_tolerance_yen`、§16)を含む。
+2. **store**(`accounting/config/stores/{store_id}/`):特定の店舗にだけ適用する設定。年月をまたいで有効(月が変わっても原則として引き継がれる)。
+   - `staff_aliases.yaml`:その店舗のスタッフ・社内購入者の別名(alias)マスター(§10)。
+3. **store×year_month**(`accounting/config/stores/{store_id}/{year_month}/`):特定店舗・特定年月にだけ適用する確定事実。
+   - `confirmed_purchaser_blocks.yaml`(§12)
+   - `confirmed_category_reclassifications.yaml`(§14)
+   - `confirmed_status_overrides.yaml`(§15・§19)
+   - `confirmed_quantity_corrections.yaml`(§19)
+   - `confirmed_exception_transactions.yaml`(§18)
+   - `confirmed_manual_share_groups.yaml`(§21)
+
+`run_product_audit.py`の`default_config_paths(store_id, year_month)`が、この3階層の既定パスを毎回組み立てる。ファイルが存在しない場合(例:まだ確定事実が無い店舗・月)は、各`load_*`関数が空(`{}`・`[]`)として扱い、判定に一切影響しない。CLI引数で明示的にパスを指定すれば上書きできる。
+
+### 判定基準(どの階層に置くか)
+
+- **商品そのものの価格・原価・税率**(全店舗共通の商品マスター相当) → global。
+- **その店舗のスタッフ・組織に関する事実**(名簿に無い名前の解決等)で、特定の月に限定されないもの → store。
+- **特定の日報行に関する、現場確認済みの一回限りの事実**(売上シェア・例外取引・区分振替・特定の連続購入ブロック等) → store×year_month。
+- 判断に迷う場合、または他店舗でも同じ内容か未確認の場合は、より狭い階層(store×year_month)に置き、確認が取れてから広い階層へ引き上げる(推測で広い階層に置かない)。
+
+### みよし店8月での検証結果
+
+みよし店8月の監査(守山固有の確定事実が0件のみよし用ディレクトリで実行)で、以下を確認した。
+
+- マグネシウムの価格履歴汚染(§8と同一の事象)が、`_find_known_discrepancy`(§8)により自動的に「K(既知差異)」として解決された(店舗固有のコードや設定を追加せずに再現)。
+- I列「売上シェア」の明示記載による2名シェア(8/1、マグネシウム)が、`detect_and_apply_shared_sales`(§11)により自動的に検出・確定された(店舗固有の設定を追加せずに再現)。
+- 守山固有の確定事実(8/17の売上シェア、とこちゃんベルト、辻明子の連続購入ブロック等)は一切適用されなかった(該当ディレクトリにファイルが存在しないため)。
+
+これにより、監査ロジックの汎用部分(価格履歴・既知差異・売上シェア自動検出・在庫帳突合等)が店舗をまたいで正しく再利用できることを確認した。

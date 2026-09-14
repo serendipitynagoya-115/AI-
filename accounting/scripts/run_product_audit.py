@@ -4,11 +4,20 @@
 やること:
   1. Google Driveミラーとして取得済みのローカルExcel(日報)を読み取る(書き込みはしない)。
   2. 日別シート(1〜31)から、物販(商品購入)取引をすべて抽出する。
-  3. accounting/config/product_price_history.yaml・staff_price_rules.yaml を使い、
+  3. accounting/config/global/product_price_history.yaml・staff_price_rules.yaml を使い、
      「取引日時点で有効だった価格・原価」で監査する(現在価格での再計算はしない)。
   4. 一般顧客／スタッフ／不明を判定し、それぞれの売上・原価・粗利益・粗利率を集計する。
   5. 異常(価格不一致・原価未登録・価格履歴不足・商品不明・要現場確認等)を一覧化する。
   6. 結果を accounting/output/ へ、ログを accounting/logs/ へ出力する。
+
+設定ファイルの3階層(2026-09-15確定。product-audit-spec.md §22参照):
+  1. global(`accounting/config/global/`): 全店舗・全期間共通のルール(価格履歴・
+     社割ルール等)。店舗名をハードコードしない。
+  2. store(`accounting/config/stores/{store_id}/`): 店舗にだけ適用する設定
+     (店舗固有のスタッフ別名等)。
+  3. store×year_month(`accounting/config/stores/{store_id}/{year_month}/`):
+     特定店舗・特定年月にだけ適用する確定事実(売上シェア・例外取引・購入者ブロック等)。
+  store_id・year_monthを変えれば、他店舗の確定事実を一切読み込まずに監査できる。
 
 やらないこと:
   - Googleスプレッドシートへの書き込み。
@@ -34,6 +43,32 @@ OVERFLOW_START_ROW = xlsx_report.OVERFLOW_START_ROW
 OVERFLOW_END_ROW = xlsx_report.OVERFLOW_END_ROW
 
 
+CONFIG_DIR = Path(__file__).resolve().parent.parent / "config"
+
+
+def default_config_paths(store_id: str, year_month: str) -> dict:
+    """3階層(global/store/store×year_month)の既定パスを組み立てる。
+
+    店舗名・年月をハードコードせず、呼び出し時のstore_id・year_monthから
+    毎回組み立てる。ファイルが存在しない場合(例:まだ確定事実が無い店舗・月)は、
+    各loaderが空として扱う(product_audit.pyの各load_*関数を参照)。
+    """
+    global_dir = CONFIG_DIR / "global"
+    store_dir = CONFIG_DIR / "stores" / store_id
+    store_month_dir = store_dir / year_month
+    return {
+        "price_history": global_dir / "product_price_history.yaml",
+        "staff_price_rules": global_dir / "staff_price_rules.yaml",
+        "staff_aliases": store_dir / "staff_aliases.yaml",
+        "purchaser_blocks": store_month_dir / "confirmed_purchaser_blocks.yaml",
+        "category_reclassifications": store_month_dir / "confirmed_category_reclassifications.yaml",
+        "status_overrides": store_month_dir / "confirmed_status_overrides.yaml",
+        "quantity_corrections": store_month_dir / "confirmed_quantity_corrections.yaml",
+        "exception_transactions": store_month_dir / "confirmed_exception_transactions.yaml",
+        "manual_share_groups": store_month_dir / "confirmed_manual_share_groups.yaml",
+    }
+
+
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--store-id", default="moriyama")
@@ -42,43 +77,25 @@ def parse_args():
         "--source-xlsx",
         default=str(io_utils.DATA_DIR / "moriyama" / "2026-08" / "①8月.xlsx"),
     )
-    p.add_argument(
-        "--price-history",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "product_price_history.yaml"),
-    )
-    p.add_argument(
-        "--staff-price-rules",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "staff_price_rules.yaml"),
-    )
-    p.add_argument(
-        "--staff-aliases",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "staff_aliases.yaml"),
-    )
-    p.add_argument(
-        "--purchaser-blocks",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_purchaser_blocks.yaml"),
-    )
-    p.add_argument(
-        "--category-reclassifications",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_category_reclassifications.yaml"),
-    )
-    p.add_argument(
-        "--status-overrides",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_status_overrides.yaml"),
-    )
-    p.add_argument(
-        "--quantity-corrections",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_quantity_corrections.yaml"),
-    )
-    p.add_argument(
-        "--exception-transactions",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_exception_transactions.yaml"),
-    )
-    p.add_argument(
-        "--manual-share-groups",
-        default=str(Path(__file__).resolve().parent.parent / "config" / "confirmed_manual_share_groups.yaml"),
-    )
-    return p.parse_args()
+    # 以下の設定ファイル系引数は、未指定ならstore_id・year_monthから3階層の
+    # 既定パス(default_config_paths)を組み立てる。CLIで明示指定すれば上書きできる。
+    p.add_argument("--price-history", default=None)
+    p.add_argument("--staff-price-rules", default=None)
+    p.add_argument("--staff-aliases", default=None)
+    p.add_argument("--purchaser-blocks", default=None)
+    p.add_argument("--category-reclassifications", default=None)
+    p.add_argument("--status-overrides", default=None)
+    p.add_argument("--quantity-corrections", default=None)
+    p.add_argument("--exception-transactions", default=None)
+    p.add_argument("--manual-share-groups", default=None)
+    args = p.parse_args()
+
+    defaults = default_config_paths(args.store_id, args.year_month)
+    for key in defaults:
+        arg_name = key.replace("-", "_")
+        if getattr(args, arg_name) is None:
+            setattr(args, arg_name, str(defaults[key]))
+    return args
 
 
 def _num(v):
