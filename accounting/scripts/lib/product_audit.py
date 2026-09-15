@@ -200,6 +200,106 @@ def apply_confirmed_quantity_corrections(
         r["quantity"] = rec["corrected_quantity"]
 
 
+def load_confirmed_transaction_decompositions(path: Path) -> dict[tuple, dict]:
+    """確定済み取引分解(transaction-level decomposition)マスターを読み込む
+    (2026-09-16確定、product-audit-spec.md §29参照)。キーは(store_id, year_month, date, row)。
+
+    1行(1商品名・数量1)に複数商品の合算入力があった、または数量1のまま複数個を
+    販売していたことが現場確認された取引を、複数の確定済み商品行に分解するために使う。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    result = {}
+    for rec in doc.get("decompositions", []) or []:
+        key = (rec["store_id"], rec["year_month"], rec["date"], rec["row"])
+        result[key] = rec
+    return result
+
+
+def apply_confirmed_transaction_decompositions(
+    rows: list[dict], *, store_id: str, year_month: str, date_key: str, decompositions: dict[tuple, dict],
+) -> list[dict]:
+    """確定済み取引分解を、監査前の生データ行(rows)に適用し、分解後の行リストを返す。
+
+    「1行=1商品・K列=実数量」とは限らないことが現場確認で判明した取引について、
+    元の1行を複数の確定済み商品行(コンポーネント)へ分解する(元Excelは変更しない)。
+    各コンポーネントの税抜売上(tax_excl_revenue)は、元の行が実際に計算した
+    税込/税抜の比率をそのまま使って按分する(特定の税率を推測で仮定しない。
+    最後のコンポーネントには端数調整のため残差を割り当て、合計が元の税抜売上と
+    厳密に一致するようにする)。今回confirmed化された取引だけに適用し、
+    他の取引への自動的な推測適用は行わない。
+    """
+    result = []
+    for r in rows:
+        rec = decompositions.get((store_id, year_month, date_key, r["row"]))
+        if rec is None:
+            result.append(r)
+            continue
+        components = rec["components"]
+        original_incl = r["gross_incl_tax"]
+        original_excl = r["tax_excl_revenue"]
+        total_incl = round(sum(c["unit_price_incl_tax"] * c["quantity"] for c in components), 2)
+        if abs(total_incl - original_incl) >= 1.0:
+            raise ValueError(
+                f"確定済み取引分解の合計({total_incl}円)が元の税込金額({original_incl}円)と"
+                f"一致しません({store_id} {date_key} 行{r['row']})。confirmed設定を確認してください。"
+            )
+        excl_remaining = original_excl
+        for i, c in enumerate(components):
+            comp_incl = round(c["unit_price_incl_tax"] * c["quantity"], 2)
+            if i == len(components) - 1:
+                comp_excl = round(excl_remaining, 2)
+            else:
+                share = (comp_incl / original_incl) if original_incl else 0.0
+                comp_excl = round(original_excl * share, 2)
+                excl_remaining = round(excl_remaining - comp_excl, 2)
+            note = (
+                f"確定済み取引分解(product-audit-spec.md §29): 元は「{r['product']}」数量"
+                f"{r['quantity']}・税込{original_incl}円の1行だったが、現場確認により"
+                f"「{c['canonical_product_name']}」{c['quantity']}個・税込{comp_incl}円と確定"
+                f"({rec['note'].strip()})"
+            )
+            if c.get("price_note"):
+                note = f"{note} {c['price_note'].strip()}"
+            if rec.get("tax_category_note") and i == 0:
+                # 税区分要確認(§29): 元の行の税区分(標準税率/軽減税率)と、分解後の
+                # 実際の商品構成の税区分が食い違っている可能性がある場合の注記。
+                # 実績売上・監査調整売上のいずれも変更せず、店舗全体の1件として
+                # (コンポーネントごとに重複計上しない)別軸で保持する。
+                note = f"{note} {rec['tax_category_note'].strip()}"
+            result.append({
+                **r,
+                "product": c["canonical_product_name"],
+                "quantity": c["quantity"],
+                "gross_incl_tax": comp_incl,
+                "discount_incl_tax": 0.0,
+                "net_incl_tax": comp_incl,
+                "tax_excl_revenue": comp_excl,
+                "quantity_correction_note": note,
+                "_decomposition_severity_override": c.get("confirmed_severity"),
+                "_tax_category_pending": bool(rec.get("tax_category_note")) if i == 0 else False,
+                "_tax_category_source_key": (store_id, year_month, date_key, r["row"]) if i == 0 and rec.get("tax_category_note") else None,
+            })
+    return result
+
+
+def load_confirmed_payment_corrections(path: Path) -> dict[tuple, dict]:
+    """確定済み支払金額修正マスターを読み込む(2026-09-16確定、product-audit-spec.md §29参照)。
+    キーは(store_id, year_month, date, row)。
+
+    現金・カード・PayPay(Y/Z/AA列)が空欄のまま記録されているが、現場確認により
+    実際の支払方法・金額が判明した取引について、支払照合(payment_reconciliation)の
+    計算にのみ使う確定値を保持する。元Excelは変更しない。
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        doc = yaml.safe_load(f)
+    result = {}
+    for rec in doc.get("corrections", []) or []:
+        key = (rec["store_id"], rec["year_month"], rec["date"], rec["row"])
+        result[key] = rec
+    return result
+
+
 def load_confirmed_category_reclassifications(path: Path) -> dict[tuple, dict]:
     """物販監査の対象から除外する、確定済みの区分振替マスターを読み込む(2026-09-15確定、
     product-audit-spec.md §14参照)。キーは(store_id, year_month, date, row)。

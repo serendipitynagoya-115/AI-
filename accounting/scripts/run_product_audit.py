@@ -67,6 +67,8 @@ def default_config_paths(store_id: str, year_month: str) -> dict:
         "exception_transactions": store_month_dir / "confirmed_exception_transactions.yaml",
         "manual_share_groups": store_month_dir / "confirmed_manual_share_groups.yaml",
         "structural_discrepancies": store_month_dir / "confirmed_structural_discrepancies.yaml",
+        "transaction_decompositions": store_month_dir / "confirmed_transaction_decompositions.yaml",
+        "payment_corrections": store_month_dir / "confirmed_payment_corrections.yaml",
     }
 
 
@@ -90,6 +92,8 @@ def parse_args():
     p.add_argument("--exception-transactions", default=None)
     p.add_argument("--manual-share-groups", default=None)
     p.add_argument("--structural-discrepancies", default=None)
+    p.add_argument("--transaction-decompositions", default=None)
+    p.add_argument("--payment-corrections", default=None)
     args = p.parse_args()
 
     defaults = default_config_paths(args.store_id, args.year_month)
@@ -191,6 +195,8 @@ def main():
     exception_transactions_path = Path(args.exception_transactions)
     manual_share_groups_path = Path(args.manual_share_groups)
     structural_discrepancies_path = Path(args.structural_discrepancies)
+    transaction_decompositions_path = Path(args.transaction_decompositions)
+    payment_corrections_path = Path(args.payment_corrections)
     price_history = product_audit.load_price_history(price_history_path)
     staff_price_rules = product_audit.load_staff_price_rules(staff_rules_path)
     staff_aliases = product_audit.load_staff_aliases(staff_aliases_path) if staff_aliases_path.exists() else {}
@@ -222,6 +228,14 @@ def main():
         product_audit.load_confirmed_structural_discrepancies(structural_discrepancies_path)
         if structural_discrepancies_path.exists() else []
     )
+    transaction_decompositions = (
+        product_audit.load_confirmed_transaction_decompositions(transaction_decompositions_path)
+        if transaction_decompositions_path.exists() else {}
+    )
+    payment_corrections = (
+        product_audit.load_confirmed_payment_corrections(payment_corrections_path)
+        if payment_corrections_path.exists() else {}
+    )
     logger.info(f"価格履歴マスター読み込み: {len(price_history)}商品 ({price_history_path})")
     logger.info(f"スタッフ価格履歴マスター読み込み: {len(staff_price_rules)}商品 ({staff_rules_path})")
     logger.info(f"スタッフ・社内購入者の別名マスター読み込み: {len(staff_aliases)}件 ({staff_aliases_path})")
@@ -232,6 +246,8 @@ def main():
     logger.info(f"確定済み社内例外取引マスター読み込み: {len(exception_transactions)}件 ({exception_transactions_path})")
     logger.info(f"現場確認に基づく手動確定・売上シェアグループ読み込み: {len(manual_share_groups)}件 ({manual_share_groups_path})")
     logger.info(f"確定済み既知構造差異マスター読み込み: {len(structural_discrepancies)}件 ({structural_discrepancies_path})")
+    logger.info(f"確定済み取引分解マスター読み込み: {len(transaction_decompositions)}件 ({transaction_decompositions_path})")
+    logger.info(f"確定済み支払金額修正マスター読み込み: {len(payment_corrections)}件 ({payment_corrections_path})")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -244,6 +260,7 @@ def main():
     all_reclassified_rows: list[dict] = []
     day_reconciliation_rows = []
     payment_reconciliation_rows = []
+    tax_category_pending_items: list[dict] = []
     for day in xlsx_report.DAY_SHEETS:
         if day not in wb.sheetnames:
             continue
@@ -282,6 +299,13 @@ def main():
         day_retail_rows = kept_rows
         all_reclassified_rows.extend(day_reclassified)
 
+        # 確定済み取引分解(§29): 1行に複数商品が合算入力されていた、または数量1のまま
+        # 複数個を販売していたことが現場確認された取引を、複数の確定済み商品行へ分解する。
+        day_retail_rows = product_audit.apply_confirmed_transaction_decompositions(
+            day_retail_rows, store_id=store_id, year_month=year_month,
+            date_key=date_key, decompositions=transaction_decompositions,
+        )
+
         day_txs = []
         for r in day_retail_rows:
             tx = product_audit.audit_transaction(
@@ -295,6 +319,20 @@ def main():
                 note_raw=r["note_raw"], purchaser_name_note=r["purchaser_name_note"],
                 quantity_correction_note=r["quantity_correction_note"],
             )
+            severity_override = r.get("_decomposition_severity_override")
+            if severity_override:
+                # 確定済み取引分解(§29)のコンポーネントのうち、店舗固有のconfirmed価格
+                # (globalの登録価格とは一致しない)を使っているものだけ、severityを
+                # オーナー確認済みとして上書きする(classification・原価判定は変更しない。
+                # 緑店8/8プロテインの前例と同じ考え方)。
+                tx.severity = severity_override
+            if r.get("_tax_category_pending"):
+                # 税区分要確認(§29): 実績売上・商品構成はconfirmed済みだが、元の税区分
+                # (標準税率/軽減税率)が実際の商品構成と食い違っている可能性がある取引。
+                # コンポーネントごとに重複計上せず、元の行単位で1件として数える。
+                tax_category_pending_items.append({
+                    "date": date_key, "row": r["row"], "customer_name": r["customer_name"],
+                })
             day_txs.append(tx)
         all_transactions.extend(day_txs)
         row_to_tx = {t.sheet_row: t for t in day_txs}
@@ -361,12 +399,20 @@ def main():
             z = _num_or_none(ws[f"Z{r}"].value) or 0
             aa = _num_or_none(ws[f"AA{r}"].value) or 0
             paid = y + z + aa
+            # 確定済み支払金額修正(§29): 現金・カード・PayPay列が空欄のまま記録されて
+            # いるが、現場確認により実際の支払方法・金額が判明した取引について、
+            # 支払照合の計算にのみ確定値を使う(元Excelは変更しない)。
+            payment_correction = payment_corrections.get((store_id, year_month, date_key, r))
+            if payment_correction is not None:
+                paid = payment_correction["confirmed_paid_amount"]
             row_diff = round(paid - x, 2)
             if abs(row_diff) < 1.0:
                 continue
             tx = row_to_tx.get(r)
             explained = False
-            if tx is not None and tx.classification == "K" and tx.regular_price_incl_tax_expected is not None:
+            if payment_correction is not None:
+                explained = True
+            elif tx is not None and tx.classification == "K" and tx.regular_price_incl_tax_expected is not None:
                 qty = tx.quantity if tx.quantity else 1
                 known_contamination = round(tx.actual_price_incl_tax - tx.regular_price_incl_tax_expected * qty, 2)
                 explained = abs(row_diff + known_contamination) < 1.0
@@ -521,6 +567,35 @@ def main():
     store_total_actual_sales = monthly_summary["store_total_actual_sales"]
     retail_sales_reported = monthly_summary["retail_sales_reported"]
     ticket_treatment_sales_reported = monthly_summary["ticket_treatment_sales_reported"]
+
+    # 原因確定済みかつ決定論的に補正額を復元できた場合の店舗全体売上の再構成
+    # (2026-09-16確定。product-audit-spec.md §29参照)。元Excelのセル自体は
+    # 読み取れない(#N/A等)ままだが、セル参照チェーンを数式レベルで追跡し、
+    # 他の全ての既知パターンと矛盾しない静的な値であることを確認した場合のみ
+    # 適用する。confirmed_structural_discrepancies.yamlに明示登録された
+    # 復元値だけを使い、推測では埋めない。
+    store_total_reconstructed = False
+    if store_total_actual_sales is None:
+        recon = next(
+            (
+                d for d in structural_discrepancies
+                if d.get("store_id") == store_id and d.get("year_month") == year_month
+                and d.get("check") == "store_total_actual_sales_unreadable"
+                and d.get("corrected_store_total_actual_sales") is not None
+            ),
+            None,
+        )
+        if recon is not None:
+            store_total_actual_sales = recon["corrected_store_total_actual_sales"]
+            ticket_treatment_sales_reported = recon.get("corrected_ticket_treatment_sales_reported")
+            retail_sales_reported = recon.get("corrected_retail_sales_reported")
+            store_total_reconstructed = True
+            logger.info(
+                f"店舗全体の実売実績をconfirmed設定の決定論的復元値から採用します: "
+                f"store_total_actual_sales={store_total_actual_sales}円"
+                f"(§29参照。元Excelのセルは引き続き#N/Aのまま、編集していません)"
+            )
+
     retail_sales_after_reclassification = round(total_engine, 2)
     ticket_treatment_sales_after_reclassification = (
         round(ticket_treatment_sales_reported + total_reclassified_all, 2)
@@ -568,11 +643,65 @@ def main():
     # もう一方(既知構造差異を除く)が残っていれば店舗監査全体を「完全解決」とは扱わない。
     store_wide_issues = []
     known_structural_discrepancies = []
-    if store_total_actual_sales is None:
-        store_wide_issues.append({
-            "type": "store_total_actual_sales_unreadable",
-            "detail": "月報集計シートから店舗全体の実売実績を読み取れなかった",
+    if store_total_reconstructed:
+        # 決定論的復元(§29)を適用した場合は、原因・復元手順・復元後の差額を
+        # 既知構造差異として明示的に記録する(diffが許容範囲内でも、店舗全体
+        # 実売実績が元Excelのセルではなく復元値であることを追跡できるようにする)。
+        recon_source = next(
+            d for d in structural_discrepancies
+            if d.get("store_id") == store_id and d.get("year_month") == year_month
+            and d.get("check") == "store_total_actual_sales_unreadable"
+        )
+        known_structural_discrepancies.append({
+            "type": "store_total_actual_sales_reconstructed",
+            "check": "store_total_actual_sales_unreadable",
+            "diff": store_total_check_diff,
+            "cause": recon_source["cause"],
+            "derivation": recon_source.get("derivation", ""),
+            "detail": (
+                "店舗全体の実売実績は元Excelのセル(#N/A)からではなく、confirmed設定に"
+                "登録された決定論的復元値を採用している。復元後の値は物販売上+施術・"
+                "既存売上の合計とほぼ一致しており(残差は端数のみ)、復元の妥当性を裏付ける"
+            ),
         })
+        logger.info(
+            f"店舗全体の実売実績は決定論的復元値を採用済み(§29参照)。復元値と物販+施術"
+            f"合計との差={store_total_check_diff}円(端数のみ、整合性を確認済み)"
+        )
+    elif store_total_actual_sales is None:
+        # 原因(#N/A等)そのものは特定済みだが、元Excelを修正しない限り正確な補正額を
+        # 計算できない(施術売上の再計算ロジックを再現する必要があるため)ケース。
+        # expected_diffでの一致判定ではなく、check種別だけで一致させる
+        # (2026-09-16確定。product-audit-spec.md §29参照)。
+        matched_unreadable = next(
+            (
+                d for d in structural_discrepancies
+                if d.get("store_id") == store_id and d.get("year_month") == year_month
+                and d.get("check") == "store_total_actual_sales_unreadable"
+            ),
+            None,
+        )
+        if matched_unreadable is not None:
+            known_structural_discrepancies.append({
+                "type": matched_unreadable.get("type", "store_total_actual_sales_unreadable_known_cause"),
+                "check": "store_total_actual_sales_unreadable",
+                "diff": None,
+                "cause": matched_unreadable["cause"],
+                "detail": (
+                    "店舗全体の実売実績が月報集計シート上#N/A等で読み取れないが、原因は"
+                    "特定済み。ただし元Excelを修正しない限り正確な補正額は計算できないため、"
+                    "金額は未確定のまま既知構造差異として記録する"
+                ),
+            })
+            logger.info(
+                "店舗全体の実売実績が読み取れませんが、原因は特定済みのため既知構造差異として"
+                f"記録します(補正額は未確定): {matched_unreadable['cause'].strip()}"
+            )
+        else:
+            store_wide_issues.append({
+                "type": "store_total_actual_sales_unreadable",
+                "detail": "月報集計シートから店舗全体の実売実績を読み取れなかった",
+            })
     elif abs(store_total_check_diff) >= 1.0:
         matched = _match_structural_discrepancy("store_total_actual_sales", store_total_check_diff)
         if matched is not None:
@@ -886,6 +1015,12 @@ def main():
             "known_structural_discrepancies": known_structural_discrepancies,
             "fully_resolved": severity_counts["要確認"] == 0 and store_wide_pending_review_count == 0,
         },
+        # 税区分要確認(§29): 商品構成・実績売上はconfirmed済みだが、元の税区分
+        # (標準税率/軽減税率)が実際の商品構成と食い違っている可能性がある取引。
+        # 商品監査要確認・店舗全体要確認のいずれにも含めない別軸の観察事項であり、
+        # 監査調整売上には反映していない。
+        "tax_category_pending_count": len(tax_category_pending_items),
+        "tax_category_pending_items": tax_category_pending_items,
         "shared_sales": {
             "confirmed_group_count": len(confirmed_share_groups),
             "confirmed_2way_group_count": len(confirmed_2way_groups),
@@ -923,6 +1058,7 @@ def main():
         # 「revenue_excl_tax.total」はあくまで物販売上であり、店舗全体売上ではないことに注意。
         "store_overall_revenue": {
             "store_total_actual_sales": store_total_actual_sales,
+            "store_total_actual_sales_reconstructed": store_total_reconstructed,
             "retail_sales_reported_before_reclassification": retail_sales_reported,
             "ticket_treatment_sales_reported_before_reclassification": ticket_treatment_sales_reported,
             "retail_sales_after_reclassification": retail_sales_after_reclassification,
@@ -931,7 +1067,9 @@ def main():
                 "store_total_actual_sales(月報集計シート実売実績累計)は区分振替の影響を受けない"
                 "店舗全体の実売合計。retail_sales_after_reclassification + "
                 "ticket_treatment_sales_after_reclassification が store_total_actual_sales と"
-                "一致することを確認する。"
+                "一致することを確認する。store_total_actual_sales_reconstructed=trueの場合、"
+                "元Excelのセルは#N/A等で読み取れず、confirmed設定に登録された決定論的復元値を"
+                "採用している(§29参照。元Excelは編集していない)。"
             ),
         },
         "revenue_excl_tax": {

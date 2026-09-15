@@ -1,0 +1,18 @@
+# 稲沢店2026年8月の確定済み支払金額修正マスター
+#
+# 仕組みの説明は accounting/docs/product-audit-spec.md §29 を参照。
+# 現金・カード・PayPay(Y/Z/AA列)が空欄のまま記録されているが、現場確認により
+# 実際の支払方法・金額が判明した取引を登録する。支払照合(payment_reconciliation)
+# の計算にのみ使用し、元Excelは変更しない。
+
+corrections:
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-09"
+    row: 11
+    confirmed_paid_amount: 4400
+    note: >
+      顧客名「前田ちなつ」様、税込4,400円(回数券使用「BK20（通常」)。
+      日報Y/Z/AA列が空欄のまま最終売上(X列)4,400円が計上されていたが、
+      現場確認(服部雄策様、2026-09-15)により実際の支払方法はクレジットカード
+      (Z列相当)と確定した。

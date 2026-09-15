@@ -1,0 +1,314 @@
+# 稲沢店2026年8月の確定済み「取引分解(transaction-level decomposition)」マスター
+#
+# 仕組みの説明は accounting/docs/product-audit-spec.md §29 を参照。
+# 稲沢店担当者(服部雄策様)への現場確認により、「1行=1商品・K列=実数量」という
+# 前提が成り立たない取引(1行に複数商品を合算入力していた、または数量1のまま
+# 複数個を販売していた)が判明した。今回オーナー・現場確認が取れた取引だけを
+# 登録し、他の取引への自動的な推測適用は行わない。元Excel(source)は変更しない。
+#
+# 「グレイトマグネシウム」を「ドクターセレン（マグネシウム）」として扱う各行は、
+# 2026年8月時点で稲沢店において実際に3,600円/個で販売されたことが現場確認された
+# transaction-level(店舗固有)の確定事実であり、他店舗の2026年8月通常価格3,456円や
+# global設定は一切変更していない。
+
+decompositions:
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-03"
+    row: 7
+    components:
+      - canonical_product_name: "MVM(マルチビタミンミネラル)"
+        quantity: 2
+        unit_price_incl_tax: 5472
+    note: >
+      8/3行7、顧客名「櫻山貴雄」(スタッフ2本人、staff_aliases.yamlで解決)。
+      現場回答(服部雄策様、2026-09-15):「櫻山　MVM2つ（社員価格）購入です。」
+      source(日報)は「マルチミネラルビタミン」数量1・税込10,944円だが、実際は
+      MVM(マルチビタミンミネラル)のスタッフ価格5,472円(通常価格9,120円の40%OFF、
+      config/global/staff_price_rules.yaml登録済み)×2個=10,944円と確定した。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-10"
+    row: 8
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+      - canonical_product_name: "ドクターセレン（マグネシウム）"
+        quantity: 1
+        unit_price_incl_tax: 3600
+        confirmed_severity: 正常
+        price_note: >
+          2026年8月時点、稲沢店でこの取引において実際に3,600円/個で販売された
+          ことが現場確認された取引固有のconfirmed fact。他店舗の2026年8月通常
+          価格3,456円やglobal設定は変更しない(product-audit-spec.md §29参照)。
+    note: >
+      8/10行8、顧客名「馬場一栄」様。現場回答(服部雄策様、2026-09-15):
+      「プロテインとマグネシウム（3,600円）の購入です。」source(日報)は
+      「FEEL NATURAL（WPC）プレーン」数量1・税込9,540円だが、実際は
+      ドクターセレン（プロテイン）1個(5,940円)+マグネシウム1個(3,600円)=
+      9,540円の2商品合算入力だったことが確定した。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-15"
+    row: 20
+    components:
+      - canonical_product_name: "MVM(マルチビタミンミネラル)"
+        quantity: 1
+        unit_price_incl_tax: 9120
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      8/15行20、顧客名「光村杏奈」様。現場回答(服部雄策様、2026-09-15):
+      「プロテインとMVMの購入です。」source(日報)は「マルチミネラルビタミン」
+      数量1・税込15,060円だが、実際はMVM1個(9,120円)+プロテイン1個(5,940円)=
+      15,060円の2商品合算入力だったことが確定した。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-21"
+    row: 8
+    components:
+      - canonical_product_name: "ドクターセレン（マグネシウム）"
+        quantity: 2
+        unit_price_incl_tax: 3600
+        confirmed_severity: 正常
+        price_note: >
+          2026年8月時点、稲沢店でこの取引において実際に3,600円/個で販売された
+          ことが現場確認された取引固有のconfirmed fact。他店舗の2026年8月通常
+          価格3,456円やglobal設定は変更しない(product-audit-spec.md §29参照)。
+    note: >
+      8/21行8、顧客名「大住信雄」様。現場回答(服部雄策様、2026-09-15):
+      「セレンマグネシウム 2つ購入です。」source(日報)は「グレイトマグネシウム」
+      数量1(K列)・税込7,200円だが、実際は3,600円/個×2個=7,200円の販売
+      だったことが確定した(K列の数量表記が実数量と異なる)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-21"
+    row: 10
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+      - canonical_product_name: "MVM(マルチビタミンミネラル)"
+        quantity: 1
+        unit_price_incl_tax: 9120
+      - canonical_product_name: "ドクターセレン（マグネシウム）"
+        quantity: 1
+        unit_price_incl_tax: 3600
+        confirmed_severity: 正常
+        price_note: >
+          2026年8月時点、稲沢店でこの取引において実際に3,600円/個で販売された
+          ことが現場確認された取引固有のconfirmed fact(8/10行8・8/21行8と同一
+          事実)。他店舗の2026年8月通常価格3,456円やglobal設定は変更しない
+          (product-audit-spec.md §29参照)。
+    note: >
+      8/21行10、顧客名「田島景子」様。現場確認(服部雄策様、2026-09-15)により、
+      source(日報)「その他店販」数量1・税込18,660円は、実際はドクターセレン
+      （プロテイン）1個(5,940円)+MVM1個(9,120円)+マグネシウム1個(3,600円)=
+      18,660円の3商品合算入力だったことが確定した。商品構成(confirmed)・
+      税込実績売上18,660円(confirmed)はいずれも維持する。
+    tax_category_note: >
+      税区分要確認(§29): source行は「標準税率」区分で税抜16,963.64円
+      (18,660÷1.1)と計算されているが、分解後の3商品はいずれも軽減税率対象
+      商品であり、本来は税抜17,277.78円(各商品を8%で計算)になるはずである。
+      この差額(314.14円)は税区分の入力誤りの可能性があるが、今回は元の
+      税抜売上を変更せず按分比率のみで分解した(実績売上を増額する監査調整は
+      行わない)。商品構成confirmed・税込実績売上confirmedとは別軸で、
+      税区分そのものはオーナー確認が必要な観察事項として保持する
+      (監査調整売上にはまだ入れない)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-15"
+    row: 9
+    components:
+      - canonical_product_name: "リセットフローラ　プレミアム  90粒"
+        quantity: 1
+        unit_price_incl_tax: 19800
+        confirmed_severity: 正常
+        price_note: >
+          現行の90粒商品と同一と確定(2026-09-15現場確認)。実際の販売額
+          19,800円は、価格入力ミスにより現行価格19,440円より360円多く受領した
+          ものと確認されたが、実績売上19,800円はそのまま維持し、監査調整売上・
+          ルール基準参考額のいずれにも置き換えない(product-audit-spec.md
+          §23・§29参照)。
+    note: >
+      8/15行9、顧客名「小川永理奈」様。現場回答(服部雄策様、2026-09-15):
+      source(日報)「リセットフローラ　210粒」は、実際には現行商品「リセット
+      フローラ　プレミアム90粒」と同一商品であり、210粒という規格表記が
+      旧規格の名残りであることが確定した。価格差(360円)は入力ミスによる
+      過剰受領であり、実績売上19,800円をそのまま使用する。
+
+  # 以下10件は、旧名称「FEEL NATURAL（WPC）プレーン」「マルチミネラルビタミン」の
+  # うち、現行商品(ドクターセレン（プロテイン）・MVM)と販売価格が完全一致した
+  # 取引について、店舗×月固有(transaction-level)のconfirmed canonicalizationとして
+  # 登録する(2026-09-16オーナー確認)。global商品マスターへのエイリアス追加は
+  # 行わない(他店舗・他月には一切影響しない)。source(日報)の商品名はJ列上は
+  # 変更されず、quantity_correction_noteに元の商品名を明記して追跡可能にする
+  # (product-audit-spec.md §29参照)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-01"
+    row: 4
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      顧客名「船橋美帆」様。source(日報)「FEEL NATURAL（WPC）プレーン」税込
+      5,940円/税抜5,500円は、現行「ドクターセレン（プロテイン）」の2026年8月
+      通常価格(税込5,940円/税抜5,500円)と完全一致するため、旧名称の同一商品と
+      オーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-01"
+    row: 11
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      顧客名「中島寛美」様。source(日報)「FEEL NATURAL（WPC）プレーン」税込
+      5,940円は、現行「ドクターセレン（プロテイン）」の2026年8月通常価格と
+      完全一致するため、旧名称の同一商品とオーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-01"
+    row: 16
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      顧客名「神垣良江」様。source(日報)「FEEL NATURAL（WPC）プレーン」税込
+      5,940円は、現行「ドクターセレン（プロテイン）」の2026年8月通常価格と
+      完全一致するため、旧名称の同一商品とオーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-02"
+    row: 4
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      顧客名「奥田綾乃」様。source(日報)「FEEL NATURAL（WPC）プレーン」税込
+      5,940円は、現行「ドクターセレン（プロテイン）」の2026年8月通常価格と
+      完全一致するため、旧名称の同一商品とオーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-05"
+    row: 5
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      顧客名「後藤美幸」様。source(日報)「FEEL NATURAL（WPC）プレーン」税込
+      5,940円は、現行「ドクターセレン（プロテイン）」の2026年8月通常価格と
+      完全一致するため、旧名称の同一商品とオーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-12"
+    row: 4
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      顧客名「前田晃大」様。source(日報)「FEEL NATURAL（WPC）プレーン」税込
+      5,940円は、現行「ドクターセレン（プロテイン）」の2026年8月通常価格と
+      完全一致するため、旧名称の同一商品とオーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-12"
+    row: 7
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      顧客名「櫛田笑子」様。source(日報)「FEEL NATURAL（WPC）プレーン」税込
+      5,940円は、現行「ドクターセレン（プロテイン）」の2026年8月通常価格と
+      完全一致するため、旧名称の同一商品とオーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-21"
+    row: 15
+    components:
+      - canonical_product_name: "ドクターセレン（プロテイン）"
+        quantity: 1
+        unit_price_incl_tax: 5940
+    note: >
+      顧客名「小川永理奈」様。source(日報)「FEEL NATURAL（WPC）プレーン」税込
+      5,940円は、現行「ドクターセレン（プロテイン）」の2026年8月通常価格と
+      完全一致するため、旧名称の同一商品とオーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-16"
+    row: 6
+    components:
+      - canonical_product_name: "MVM(マルチビタミンミネラル)"
+        quantity: 1
+        unit_price_incl_tax: 9120
+    note: >
+      顧客名「林郁代」様。source(日報)「マルチミネラルビタミン」税込9,120円
+      /税抜8,444.44円は、現行「MVM(マルチビタミンミネラル)」の2026年8月
+      通常価格(税込9,120円)と完全一致するため、旧名称の同一商品とオーナー
+      確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-21"
+    row: 18
+    components:
+      - canonical_product_name: "MVM(マルチビタミンミネラル)"
+        quantity: 1
+        unit_price_incl_tax: 9120
+    note: >
+      顧客名「中村香月」様。source(日報)「マルチミネラルビタミン」税込9,120円
+      は、現行「MVM(マルチビタミンミネラル)」の2026年8月通常価格と完全一致
+      するため、旧名称の同一商品とオーナー確認済み(2026-09-16)。
+
+  - store_id: inazawa
+    year_month: "2026-08"
+    date: "2026-08-05"
+    row: 12
+    components:
+      - canonical_product_name: "ドクターセレン（マグネシウム）"
+        quantity: 1
+        unit_price_incl_tax: 3600
+        confirmed_severity: 正常
+        price_note: >
+          2026年8月時点、稲沢店でこの取引において実際に3,600円/個で販売された
+          ことが確定した取引固有のconfirmed fact(8/10行8・8/21行8と同一の
+          稲沢店2026年8月固有事実。8/10・8/21の2件の独立した現場確認により、
+          稲沢店ではグレイトマグネシウムという旧表記のセレン/ドクターセレン系
+          マグネシウムが3,600円/個で販売されていたことが繰り返し確認されて
+          いるため、同一店舗・同一月・同一source商品名・数量1・税込3,600円で
+          完全一致するこの取引も同一事実として確定する)。他店舗の2026年8月
+          通常価格3,456円やglobal設定は変更しない(product-audit-spec.md
+          §29参照)。
+    note: >
+      8/5行12、顧客名「大瀧真美」様。source(日報)「グレイトマグネシウム」
+      数量1・税込3,600円。8/10行8(馬場一栄様)・8/21行8(大住信雄様)の2件の
+      独立した現場確認により、稲沢店2026年8月の「グレイトマグネシウム」は
+      実際にはドクターセレン（マグネシウム）であり、実販売価格3,600円/個が
+      稲沢店2026年8月固有の確定事実として成立していることを踏まえ、条件が
+      完全一致するこの取引もtransaction-level confirmed canonicalizationとして
+      確定する(2026-09-16オーナー確認)。実際の受領額3,600円をそのままPL売上
+      として維持する。
