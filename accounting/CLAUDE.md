@@ -73,6 +73,8 @@ Serendipity-Jでは、会社の損益計算・店舗収支・経営管理上の�
 - 実ファイル(Google スプレッドシート、Dropbox上のExcel等)への書き込みは、承認を得るまでは一切行いません。
 - バックアップが取得できない、または復元可能性を確認できない場合は、実ファイルへの書き込みを行わないでください。
 
+- **Monthly Accounting Layer(月次会計確定レイヤー、2026-09-16新設)**:「日報監査→月次確定データ→店舗別PL→全社PL→会計照合」の中間層として`accounting/scripts/lib/monthly_accounting.py`・`accounting/scripts/run_monthly_accounting.py`を追加しました。既存の物販監査(product_audit.py)のロジックは一切変更せず、その出力JSONを読み取って集約するのみです(新規売AC・既存/回数券売ADは既存の`xlsx_report.py`を再利用して日報から独立に直接合計)。6店舗(守山・みよし・緑・刈谷・日進赤池:`store_type: direct`、稲沢:`store_type: franchise`)分の月次確定データ(`accounting/output/monthly/2026-08/{store_id}.json`)と全社統合サマリー(`company_summary.json`/`.csv`)を生成できることを確認済みです。刈谷・日進赤池は物販原価未確定のため店舗レベルのretail_gross_profit/marginがnullとなり、これに連動してcompanyレベルのretail_gross_profit/marginも安易に確定させずnullのままにしています(confirmed_cogs_total・unconfirmed_cogs_sales_totalは別途表示)。稲沢店は月報集計セルが#N/Aのままである事実(`store_total_sales.source_workbook_status: "error"`)と、監査側の決定論的復元値(日報AC/AD/AF積み上げによるauthoritativeな`management_accounting_sales.total`: 949560.59円)を明確に区別して両方保持しています。今回は売上+物販原価の確定のみで、人件費・家賃・広告費等の経費、FCロイヤリティ、店舗別/全社営業利益、2026店舗収支への書き込みはまだ実装していません。
+
 ## 未設定・要確認の項目
 
 - `config/stores.yaml`:各店舗の日報の所在(Dropbox パス / Google スプレッドシートIDなど)、正式名称・別名リストが未設定です。

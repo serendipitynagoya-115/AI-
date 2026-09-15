@@ -23,6 +23,10 @@ stores:
   - id: moriyama
     official_name: "守山店"
     aliases: ["守山", "守山店"]
+    # store_type: direct(直営)/ franchise(FC)。2026-09-16、monthly accounting layer
+    # (accounting/scripts/lib/monthly_accounting.py)向けに追加。将来のFCロイヤリティ
+    # 計算等で使う想定だが、今回は属性として保持するのみで計算には使わない。
+    store_type: direct
     # 2026-09-10 調査済み(読み取り専用の実地確認)。実売上・目標値などの数値は
     # ここには記録しない(会計数値をGit管理対象に含めない方針のため)。
     source:
@@ -57,6 +61,7 @@ stores:
   - id: miyoshi
     official_name: "みよし店"
     aliases: []
+    store_type: direct
     source:
       type: ""
       spreadsheet_id: ""
@@ -66,6 +71,7 @@ stores:
   - id: nisshin_akaike
     official_name: "日進赤池店"
     aliases: []
+    store_type: direct
     source:
       type: ""
       spreadsheet_id: ""
@@ -75,6 +81,7 @@ stores:
   - id: midori
     official_name: "緑店"
     aliases: []
+    store_type: direct
     source:
       type: ""
       spreadsheet_id: ""
@@ -84,6 +91,7 @@ stores:
   - id: kariya
     official_name: "刈谷店"
     aliases: []
+    store_type: direct
     source:
       type: ""
       spreadsheet_id: ""
@@ -93,6 +101,9 @@ stores:
   - id: inazawa
     official_name: "稲沢店"
     aliases: []
+    # 稲沢店はFC(フランチャイズ)店舗(2026-09-16オーナー確認)。
+    # FCロイヤリティ等の損益計算はmonthly accounting layerではまだ実装しない。
+    store_type: franchise
     source:
       type: ""
       spreadsheet_id: ""

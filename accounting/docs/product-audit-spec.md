@@ -875,3 +875,52 @@ audit_adjustment_excl_tax(1行) = (取引日時点の税抜正規価格 − 一�
 ### ④ 税区分要確認(tax_category_note)
 
 商品構成・実績売上(税込)はconfirmedだが、元の日報が計算した税区分(標準税率/軽減税率)が実際の商品構成と食い違っている可能性がある取引を扱う。分解対象の元行(decomposition)に`tax_category_note`を指定すると、`pending_review_summary`とは独立した`tax_category_pending_count`・`tax_category_pending_items`にカウントされる(コンポーネントごとに重複計上せず、元の行単位で1件)。**税抜売上は自動で増減させない**(監査調整売上・ルール基準参考額のいずれにも入れない。§23参照)。「商品構成confirmed」「税込実績売上confirmed」「税区分要確認」を独立した3つの軸として扱う。
+
+## 30. Monthly Accounting Layer(月次会計確定レイヤー、2026-09-16確定)
+
+### 位置づけ
+
+「日報監査(product_audit) → 月次確定データ(monthly accounting layer) → 店舗別PL → 全社PL → 会計照合」という流れの中間層。`accounting/scripts/lib/monthly_accounting.py`・`accounting/scripts/run_monthly_accounting.py`で実装する。**既存のproduct_audit.py・run_product_audit.pyのロジックは一切変更せず**、その出力(`accounting/output/product_audit/{year_month}/{store_id}_product_audit_summary.json`)を「上から」読み取って集約するのみ(月次集計のために既存監査ロジックを書き換えない)。
+
+売上のうち物販(AF)は既存product_auditの出力をそのまま使う。新規売(AC)・既存/回数券売(AD)は、既存の`xlsx_report.py`(守山店向けに構築済みの行単位パーサー、`extract_all_days`/`DayResult`)を再利用して日報から直接合計する(product_audit.pyとは独立した計算経路。数式エラーのセルは0円と断定せず`unresolved`として分離する)。
+
+### 出力
+
+- 店舗別月次確定データ:`accounting/output/monthly/{year_month}/{store_id}.json`(`schema_version: "monthly_accounting_layer.v2"`)
+- 全社統合サマリー:`accounting/output/monthly/{year_month}/company_summary.json`・`.csv`
+
+### 売上authority(2026-09-16改訂、オーナー指摘反映)
+
+「日報 authoritative as recorded」の原則により、月報集計シートの実売実績セル(SOURCE月報集計)はauthorityではなく、あくまで検算対象(reconciliation target)として扱う。authorityは以下の通り(JSON出力の`sales_authority`にも明示):
+
+- `service_new` → daily AC direct sum(日報日別シートAC列の直接合計。`xlsx_report.py`、product_auditとは独立)
+- `service_existing` → daily AD direct sum(同AD列の直接合計)
+- `retail`(source/current) → product_audit.pyが取引単位で確定した物販税抜売上(`revenue_excl_tax.source_current_total`)
+- `retail`(management accounting) → source/current retail + confirmed audit adjustment(`revenue_excl_tax.audit_adjustment`)
+- `store_management_total` → management service_new + management service_existing + management retail + other(日報の日別シート積み上げの合計。SOURCE月報集計セルの値ではない)
+
+SOURCE月報集計セルが読み取れる場合でも、みよし店のようにスタッフ名マッピング漏れで過少集計されているケースがあるため、「セルが読み取れる=authority」とは扱わない。
+
+### 主要フィールド
+
+`source_current_sales`(service_new/service_existing/retail/other/total、現在表示ベース)、`management_accounting_sales`(監査調整後、store_management_totalのauthority)、`audit_adjustments`(両者の差分、常にmanagement=source+adjustmentを検証)、`retail_cogs`(confirmed_cogs/unconfirmed_cogs_sales/cogs_fully_confirmed、falseならretail_gross_profit/marginは必ずnull)。
+
+`store_total_sales`は`source_workbook_reported`/`source_workbook_status`/`source_workbook_error`(検算対象、稲沢店のように#N/Aの場合はその事実を消さず保持)と、authorityである`management_accounting`(日報日別シート積み上げの合計)を明確に区別する。
+
+`monthly_summary_reconciliation`は、SOURCE月報集計セル(`source_workbook_reported`)とauthority(`authoritative_daily_total`)の差額を検算する。差額はaudit_adjustmentおよび`confirmed_structural_discrepancies.yaml`に登録済みの既知構造差異(例:みよし店の菅原彩夏様の物販売上2件6,119.44円が月報集計側のスタッフ列マッピング漏れで欠落している既知のretail axis上の構造差異。service_existingの差異ではない)で説明できる場合は`known_difference`として保持し、無理に一致させない。
+
+`retail_reconciliation`は、日報AF列の生の直接合計(`raw_daily_af_total`、参考値)と、product_audit.pyの取引単位集計(`transaction_rounded_total`、正式値)の差を明示する。取引ごとの円未満丸めに起因する既知の誤差(概ね±0.05円以内)であり、取引の欠落・二重計上ではない。
+
+`pl_readiness`は単一の可否ではなく6つの独立軸で保持する:`sales_revenue_ready`・`retail_cogs_ready`・`retail_gross_profit_ready`・`payment_reconciliation_complete`・`tax_category_complete`・`full_audit_resolved`。決済照合・税区分未確認だけを理由に`sales_revenue_ready`をfalseにはしない(原因確定済みの既知構造差異・決定論的復元はtrueのまま)。
+
+`audit_status`・`data_quality`・`reconciliation`(A_retail/A_total/C_retail_gross_profit/D_retail_margin。店舗全体の検算は`monthly_summary_reconciliation`に統合したため旧B案は廃止)。
+
+company_summaryでは、原価未確定店舗が1店舗でも存在する場合、`company_retail_gross_profit`・`company_retail_gross_margin`は`null`のままにする(`confirmed_cogs_total`・`unconfirmed_cogs_sales_total`は別途表示)。あわせて`pl_readiness_summary`(6軸ごとの店舗数集計)、`stores_with_unconfirmed_retail_cogs`・`stores_with_payment_pending`・`stores_with_tax_pending`・`stores_with_known_structural_difference`の各リストを出力する。
+
+### 店舗属性
+
+`config/stores.yaml`の各店舗エントリに`store_type`(`direct`/`franchise`)を追加した。稲沢店のみ`franchise`。FCロイヤリティ等の損益計算はこのレイヤーではまだ実装していない(属性として保持するのみ)。
+
+### 今回実装していないもの
+
+2026店舗収支への書き込み、人件費・家賃・水道光熱費・広告費・決済手数料・本部共通費・共通費配賦・FCロイヤリティ・店舗営業利益・全社営業利益・税務会計との照合、Google Sheets書き込み。「売上+物販原価の月次確定レイヤー」のみ。
